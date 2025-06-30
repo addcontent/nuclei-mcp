@@ -10,6 +10,7 @@ import (
 	"nuclei-mcp/pkg/api"
 	"nuclei-mcp/pkg/cache"
 	"nuclei-mcp/pkg/config"
+	"nuclei-mcp/pkg/llm"
 	"nuclei-mcp/pkg/logging"
 	"nuclei-mcp/pkg/scanner"
 	"nuclei-mcp/pkg/templates"
@@ -57,8 +58,18 @@ func main() {
 		log.Fatalf("Failed to create template manager: %v", err)
 	}
 
+	// Create LLM service (optional - will be nil if no API keys are configured)
+	llmService, err := llm.NewService(log.New(os.Stdout, "[LLM] ", log.LstdFlags))
+	if err != nil {
+		consoleLogger.Log("LLM service initialization failed (this is optional): %v", err)
+		llmService = nil // Continue without LLM capabilities
+	} else {
+		consoleLogger.Log("LLM service initialized successfully")
+		defer llmService.Close()
+	}
+
 	// Create MCP server
-	mcpServer := api.NewNucleiMCPServer(scannerService, log.New(os.Stdout, "[MCP] ", log.LstdFlags), tm)
+	mcpServer := api.NewNucleiMCPServer(scannerService, log.New(os.Stdout, "[MCP] ", log.LstdFlags), tm, llmService)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := setupSignalHandling()

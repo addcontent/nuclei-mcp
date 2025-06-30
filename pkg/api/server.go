@@ -10,13 +10,15 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/schemas"
 	"nuclei-mcp/pkg/cache"
+	"nuclei-mcp/pkg/llm"
 	"nuclei-mcp/pkg/scanner"
 	"nuclei-mcp/pkg/templates"
 )
 
 // NewNucleiMCPServer creates a new MCP server for Nuclei
-func NewNucleiMCPServer(service *scanner.ScannerService, logger *log.Logger, tm *templates.TemplateManager) *server.MCPServer {
+func NewNucleiMCPServer(service *scanner.ScannerService, logger *log.Logger, tm *templates.TemplateManager, llmService *llm.Service) *server.MCPServer {
 	mcpServer := server.NewMCPServer(
 		"nuclei-scanner",
 		"1.0.0",
@@ -89,6 +91,34 @@ func NewNucleiMCPServer(service *scanner.ScannerService, logger *log.Logger, tm 
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return handleGetTemplate(ctx, request, tm)
 	})
+
+	// Add LLM-powered vulnerability analysis tool
+	if llmService != nil {
+		mcpServer.AddTool(mcp.NewTool("analyze_vulnerability",
+			mcp.WithDescription("Uses AI to analyze a vulnerability and provide detailed insights and recommendations."),
+			mcp.WithString("vulnerability_name", mcp.Description("The name of the vulnerability."), mcp.Required()),
+			mcp.WithString("description", mcp.Description("Description of the vulnerability."), mcp.Required()),
+			mcp.WithString("target", mcp.Description("The target where the vulnerability was found."), mcp.Required()),
+		), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return handleAnalyzeVulnerability(ctx, request, llmService)
+		})
+
+		mcpServer.AddTool(mcp.NewTool("generate_recommendations",
+			mcp.WithDescription("Uses AI to generate security recommendations based on scan findings."),
+			mcp.WithString("findings", mcp.Description("Comma-separated list of security findings."), mcp.Required()),
+		), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return handleGenerateRecommendations(ctx, request, llmService)
+		})
+
+		mcpServer.AddTool(mcp.NewTool("llm_chat",
+			mcp.WithDescription("General purpose AI chat for security-related questions and analysis."),
+			mcp.WithString("message", mcp.Description("The message to send to the AI."), mcp.Required()),
+			mcp.WithString("provider", mcp.Description("LLM provider (openai, anthropic, google, mistral). Optional, uses first available."), mcp.DefaultString("auto")),
+			mcp.WithString("model", mcp.Description("Specific model to use. Optional, uses provider default."), mcp.DefaultString("auto")),
+		), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return handleLLMChat(ctx, request, llmService)
+		})
+	}
 
 	return mcpServer
 }
@@ -350,4 +380,168 @@ func handleGetTemplate(_ context.Context, request mcp.CallToolRequest, tm *templ
 	}
 
 	return mcp.NewToolResultText(string(content)), nil
+}
+
+// handleAnalyzeVulnerability handles the analyze_vulnerability tool requests
+func handleAnalyzeVulnerability(ctx context.Context, request mcp.CallToolRequest, llmService *llm.Service) (*mcp.CallToolResult, error) {
+	argMap, ok := request.Params.Arguments.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid arguments format")
+	}
+
+	vulnName, ok := argMap["vulnerability_name"].(string)
+	if !ok || vulnName == "" {
+		return nil, fmt.Errorf("invalid or missing vulnerability_name parameter")
+	}
+
+	description, ok := argMap["description"].(string)
+	if !ok || description == "" {
+		return nil, fmt.Errorf("invalid or missing description parameter")
+	}
+
+	target, ok := argMap["target"].(string)
+	if !ok || target == "" {
+		return nil, fmt.Errorf("invalid or missing target parameter")
+	}
+
+	response, err := llmService.AnalyzeVulnerability(ctx, vulnName, description, target)
+	if err != nil {
+		return nil, fmt.Errorf("vulnerability analysis failed: %w", err)
+	}
+
+	// Format the response with metadata
+	formattedResponse := fmt.Sprintf("# AI Vulnerability Analysis\n\n**Vulnerability:** %s\n**Target:** %s\n**Provider:** %s\n**Model:** %s\n\n---\n\n%s",
+		vulnName, target, response.Provider, response.Model, response.Content)
+
+	if response.Usage != nil {
+		formattedResponse += fmt.Sprintf("\n\n---\n\n**Token Usage:** %d total (%d prompt + %d completion)",
+			response.Usage.TotalTokens, response.Usage.PromptTokens, response.Usage.CompletionTokens)
+	}
+
+	return mcp.NewToolResultText(formattedResponse), nil
+}
+
+// handleGenerateRecommendations handles the generate_recommendations tool requests
+func handleGenerateRecommendations(ctx context.Context, request mcp.CallToolRequest, llmService *llm.Service) (*mcp.CallToolResult, error) {
+	argMap, ok := request.Params.Arguments.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid arguments format")
+	}
+
+	findingsStr, ok := argMap["findings"].(string)
+	if !ok || findingsStr == "" {
+		return nil, fmt.Errorf("invalid or missing findings parameter")
+	}
+
+	// Split findings by comma
+	findings := strings.Split(findingsStr, ",")
+	for i, finding := range findings {
+		findings[i] = strings.TrimSpace(finding)
+	}
+
+	response, err := llmService.GenerateRecommendations(ctx, findings)
+	if err != nil {
+		return nil, fmt.Errorf("recommendation generation failed: %w", err)
+	}
+
+	// Format the response with metadata
+	formattedResponse := fmt.Sprintf("# AI Security Recommendations\n\n**Findings Analyzed:** %d\n**Provider:** %s\n**Model:** %s\n\n---\n\n%s",
+		len(findings), response.Provider, response.Model, response.Content)
+
+	if response.Usage != nil {
+		formattedResponse += fmt.Sprintf("\n\n---\n\n**Token Usage:** %d total (%d prompt + %d completion)",
+			response.Usage.TotalTokens, response.Usage.PromptTokens, response.Usage.CompletionTokens)
+	}
+
+	return mcp.NewToolResultText(formattedResponse), nil
+}
+
+// handleLLMChat handles the llm_chat tool requests
+func handleLLMChat(ctx context.Context, request mcp.CallToolRequest, llmService *llm.Service) (*mcp.CallToolResult, error) {
+	argMap, ok := request.Params.Arguments.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid arguments format")
+	}
+
+	message, ok := argMap["message"].(string)
+	if !ok || message == "" {
+		return nil, fmt.Errorf("invalid or missing message parameter")
+	}
+
+	providerStr, _ := argMap["provider"].(string)
+	modelStr, _ := argMap["model"].(string)
+
+	// Get available providers
+	providers, err := llmService.GetAccount().GetConfiguredProviders()
+	if err != nil || len(providers) == 0 {
+		return nil, fmt.Errorf("no LLM providers configured")
+	}
+
+	// Select provider
+	var provider schemas.ModelProvider
+	if providerStr == "auto" || providerStr == "" {
+		provider = providers[0] // Use first available
+	} else {
+		// Parse provider string
+		switch strings.ToLower(providerStr) {
+		case "openai":
+			provider = schemas.OpenAI
+		case "anthropic":
+			provider = schemas.Anthropic
+		case "google":
+			provider = schemas.Google
+		case "mistral":
+			provider = schemas.Mistral
+		default:
+			return nil, fmt.Errorf("unsupported provider: %s", providerStr)
+		}
+	}
+
+	// Select model
+	var model string
+	if modelStr == "auto" || modelStr == "" {
+		// Use default model for provider
+		switch provider {
+		case schemas.OpenAI:
+			model = "gpt-4o-mini"
+		case schemas.Anthropic:
+			model = "claude-3-5-sonnet-20241022"
+		case schemas.Google:
+			model = "gemini-1.5-flash"
+		case schemas.Mistral:
+			model = "mistral-small-latest"
+		default:
+			model = "gpt-4o-mini"
+		}
+	} else {
+		model = modelStr
+	}
+
+	// Create chat request
+	req := llm.ChatRequest{
+		Provider: provider,
+		Model:    model,
+		Messages: []llm.ChatMessage{
+			{Role: "user", Content: message},
+		},
+		SystemPrompt: "You are a cybersecurity expert assistant. Provide helpful, accurate, and actionable security advice.",
+		MaxTokens:    2000,
+		Temperature:  0.3,
+	}
+
+	response, err := llmService.ChatCompletion(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("chat completion failed: %w", err)
+	}
+
+	// Format the response with metadata
+	formattedResponse := fmt.Sprintf("# AI Chat Response\n\n**Provider:** %s\n**Model:** %s\n\n---\n\n%s",
+		response.Provider, response.Model, response.Content)
+
+	if response.Usage != nil {
+		formattedResponse += fmt.Sprintf("\n\n---\n\n**Token Usage:** %d total (%d prompt + %d completion)",
+			response.Usage.TotalTokens, response.Usage.PromptTokens, response.Usage.CompletionTokens)
+	}
+
+	return mcp.NewToolResultText(formattedResponse), nil
 }
