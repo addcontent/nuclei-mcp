@@ -1,0 +1,15 @@
+id: basic-test
+info:
+  name: Basic Test Template
+  author: MCP
+  severity: info
+  description: Basic test template for nuclei
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: status
+        status:
+          - 200
