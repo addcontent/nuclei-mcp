@@ -9,8 +9,6 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config stores all configuration for the application.
-// The values are read by viper from a config file or environment variables.
 type Config struct {
 	Server  ServerConfig  `mapstructure:"server"`
 	Cache   CacheConfig   `mapstructure:"cache"`
@@ -18,7 +16,6 @@ type Config struct {
 	Nuclei  NucleiConfig  `mapstructure:"nuclei"`
 }
 
-// ServerConfig stores server specific configuration.
 type ServerConfig struct {
 	Name    string `mapstructure:"name"`
 	Version string `mapstructure:"version"`
@@ -26,14 +23,12 @@ type ServerConfig struct {
 	Host    string `mapstructure:"host"`
 }
 
-// CacheConfig stores cache specific configuration.
 type CacheConfig struct {
 	Enabled bool          `mapstructure:"enabled"`
 	Expiry  time.Duration `mapstructure:"expiry"`
 	MaxSize int           `mapstructure:"max_size"`
 }
 
-// LoggingConfig stores logging specific configuration.
 type LoggingConfig struct {
 	Level        string `mapstructure:"level"`
 	Path         string `mapstructure:"path"`
@@ -55,8 +50,8 @@ type NucleiConfig struct {
 	SystemResolvers   bool          `mapstructure:"system_resolvers"`
 }
 
-// LoadConfig reads configuration from file or environment variables.
 func LoadConfig(path string) (config Config, err error) {
+
 	// Set default values
 	viper.SetDefault("server.port", 3000)
 	viper.SetDefault("server.host", "127.0.0.1")
@@ -89,6 +84,7 @@ func LoadConfig(path string) (config Config, err error) {
 		}
 	}
 
+
 	// Unmarshal config
 	err = viper.Unmarshal(&config)
 	if err != nil {
@@ -111,4 +107,5 @@ func LoadConfig(path string) (config Config, err error) {
 	}
 
 	return config, nil
+
 }

@@ -16,15 +16,13 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// NewNucleiMCPServer creates a new MCP server for Nuclei
-func NewNucleiMCPServer(service *scanner.ScannerService, logger *log.Logger, tm *templates.TemplateManager) *server.MCPServer {
+func NewNucleiMCPServer(service scanner.ScannerService, logger *log.Logger, tm templates.TemplateManager) *server.MCPServer {
 	mcpServer := server.NewMCPServer(
 		"nuclei-scanner",
 		"1.0.0",
 		server.WithLogging(),
 	)
 
-	// Add Nuclei scan tool
 	mcpServer.AddTool(mcp.NewTool("nuclei_scan",
 		mcp.WithDescription("Performs a Nuclei vulnerability scan on a target"),
 		mcp.WithString("target",
@@ -49,10 +47,9 @@ func NewNucleiMCPServer(service *scanner.ScannerService, logger *log.Logger, tm 
 			mcp.Description("Single template ID to run (alternative to template_ids)"),
 		),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return handleNucleiScanTool(ctx, request, service, logger)
+		return HandleNucleiScanTool(ctx, request, service, logger)
 	})
 
-	// Add Basic scan tool
 	mcpServer.AddTool(mcp.NewTool("basic_scan",
 		mcp.WithDescription("Performs a basic Nuclei vulnerability scan on a target without requiring template IDs"),
 		mcp.WithString("target",
@@ -60,8 +57,9 @@ func NewNucleiMCPServer(service *scanner.ScannerService, logger *log.Logger, tm 
 			mcp.Required(),
 		),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return handleBasicScanTool(ctx, request, service, logger)
+		return HandleBasicScanTool(ctx, request, service, logger)
 	})
+
 
 	// Add vulnerability resource
 	mcpServer.AddResource(mcp.NewResource("vulnerabilities", "Recent Vulnerability Reports"),
@@ -69,36 +67,34 @@ func NewNucleiMCPServer(service *scanner.ScannerService, logger *log.Logger, tm 
 			return handleVulnerabilityResource(ctx, request, service, logger)
 		})
 
-	// Add template management tools
 	mcpServer.AddTool(mcp.NewTool("add_template",
 		mcp.WithDescription("Adds a new Nuclei template."),
 		mcp.WithString("name", mcp.Description("The name of the template file."), mcp.Required()),
 		mcp.WithString("content", mcp.Description("The content of the template file."), mcp.Required()),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return handleAddTemplate(ctx, request, tm)
+		return HandleAddTemplate(ctx, request, tm)
 	})
 
 	mcpServer.AddTool(mcp.NewTool("list_templates",
 		mcp.WithDescription("Lists all available Nuclei templates."),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return handleListTemplates(ctx, request, tm)
+		return HandleListTemplates(ctx, request, tm)
 	})
 
 	mcpServer.AddTool(mcp.NewTool("get_template",
 		mcp.WithDescription("Gets the content of a specific Nuclei template."),
 		mcp.WithString("name", mcp.Description("The name of the template file."), mcp.Required()),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return handleGetTemplate(ctx, request, tm)
+		return HandleGetTemplate(ctx, request, tm)
 	})
 
 	return mcpServer
 }
 
-// handleNucleiScanTool handles the nuclei_scan tool requests
-func handleNucleiScanTool(
+func HandleNucleiScanTool(
 	ctx context.Context,
 	request mcp.CallToolRequest,
-	service *scanner.ScannerService,
+	service scanner.ScannerService,
 	_ *log.Logger,
 ) (*mcp.CallToolResult, error) {
 	argMap, ok := request.Params.Arguments.(map[string]any)
@@ -106,7 +102,6 @@ func handleNucleiScanTool(
 		return nil, fmt.Errorf("invalid arguments format")
 	}
 
-	// Extract parameters
 	target, ok := argMap["target"].(string)
 	if !ok || target == "" {
 		return nil, fmt.Errorf("invalid or missing target parameter")
@@ -124,18 +119,15 @@ func handleNucleiScanTool(
 
 	threadSafe, _ := argMap["thread_safe"].(bool)
 
-	// Extract template IDs if provided
 	var templateIDs []string
 	if ids, ok := argMap["template_ids"].(string); ok && ids != "" {
 		templateIDs = strings.Split(ids, ",")
 	}
 
-	// Also check for single template_id
 	if id, ok := argMap["template_id"].(string); ok && id != "" {
 		templateIDs = append(templateIDs, id)
 	}
 
-	// Perform scan
 	var result cache.ScanResult
 	var err error
 
@@ -149,7 +141,7 @@ func handleNucleiScanTool(
 		return nil, fmt.Errorf("scan failed: %w", err)
 	}
 
-	// Format findings
+
 	var responseText string
 	if len(result.Findings) == 0 {
 		responseText = fmt.Sprintf("No vulnerabilities found for target: %s", target)
@@ -168,11 +160,10 @@ func handleNucleiScanTool(
 	return mcp.NewToolResultText(responseText), nil
 }
 
-// handleBasicScanTool handles the basic_scan tool requests
-func handleBasicScanTool(
+func HandleBasicScanTool(
 	_ context.Context,
 	request mcp.CallToolRequest,
-	service *scanner.ScannerService,
+	service scanner.ScannerService,
 	logger *log.Logger,
 ) (*mcp.CallToolResult, error) {
 	argMap, ok := request.Params.Arguments.(map[string]any)
@@ -180,20 +171,19 @@ func handleBasicScanTool(
 		return nil, fmt.Errorf("invalid arguments format")
 	}
 
-	// Extract target parameter
 	target, ok := argMap["target"].(string)
 	if !ok || target == "" {
 		return nil, fmt.Errorf("invalid or missing target parameter")
 	}
 
-	// Perform basic scan
+
 	result, err := service.BasicScan(target)
 	if err != nil {
 		logger.Printf("Basic scan failed: %v", err)
 		return nil, err
 	}
 
-	// Convert findings to a simplified format for the response
+
 	type SimplifiedFinding struct {
 		Name        string `json:"name"`
 		Severity    string `json:"severity"`
@@ -211,7 +201,7 @@ func handleBasicScanTool(
 		})
 	}
 
-	// Create response
+
 	response := map[string]interface{}{
 		"target":         result.Target,
 		"scan_time":      result.ScanTime.Format(time.RFC3339),
@@ -219,7 +209,7 @@ func handleBasicScanTool(
 		"findings":       simplifiedFindings,
 	}
 
-	// Marshal response to JSON
+
 	responseJSON, err := json.Marshal(response)
 	if err != nil {
 		logger.Printf("Failed to marshal response: %v", err)
@@ -229,14 +219,13 @@ func handleBasicScanTool(
 	return mcp.NewToolResultText(string(responseJSON)), nil
 }
 
-// handleVulnerabilityResource handles the vulnerability resource requests
-func handleVulnerabilityResource(
+func HandleVulnerabilityResource(
 	_ context.Context,
 	_ mcp.ReadResourceRequest,
-	service *scanner.ScannerService,
+	service scanner.ScannerService,
 	_ *log.Logger,
 ) ([]mcp.ResourceContents, error) {
-	results := service.Cache.GetAll()
+	results := service.GetAll()
 
 	var recentScans []map[string]interface{}
 	for _, result := range results {
@@ -247,8 +236,10 @@ func handleVulnerabilityResource(
 		}
 
 
+
 		if len(result.Findings) > 0 {
 			var sampleFindings []map[string]string
+
 			count := min(5, len(result.Findings))
 			for i := 0; i < count; i++ {
 				finding := result.Findings[i]
@@ -286,7 +277,6 @@ func handleVulnerabilityResource(
 		nil
 }
 
-// min returns the smaller of x or y
 func min(x, y int) int {
 	if x < y {
 		return x
@@ -294,8 +284,7 @@ func min(x, y int) int {
 	return y
 }
 
-// handleAddTemplate handles the add_template tool requests
-func handleAddTemplate(_ context.Context, request mcp.CallToolRequest, tm *templates.TemplateManager) (*mcp.CallToolResult, error) {
+func HandleAddTemplate(_ context.Context, request mcp.CallToolRequest, tm templates.TemplateManager) (*mcp.CallToolResult, error) {
 	argMap, ok := request.Params.Arguments.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("invalid arguments format")
@@ -318,8 +307,7 @@ func handleAddTemplate(_ context.Context, request mcp.CallToolRequest, tm *templ
 	return mcp.NewToolResultText(fmt.Sprintf("Template '%s' added successfully.", name)), nil
 }
 
-// handleListTemplates handles the list_templates tool requests
-func handleListTemplates(_ context.Context, _ mcp.CallToolRequest, tm *templates.TemplateManager) (*mcp.CallToolResult, error) {
+func HandleListTemplates(_ context.Context, _ mcp.CallToolRequest, tm templates.TemplateManager) (*mcp.CallToolResult, error) {
 	templateFiles, err := tm.ListTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list templates: %w", err)
@@ -332,8 +320,7 @@ func handleListTemplates(_ context.Context, _ mcp.CallToolRequest, tm *templates
 	return mcp.NewToolResultText(fmt.Sprintf("Available templates:\n- %s", strings.Join(templateFiles, "\n- "))), nil
 }
 
-// handleGetTemplate handles the get_template tool requests
-func handleGetTemplate(_ context.Context, request mcp.CallToolRequest, tm *templates.TemplateManager) (*mcp.CallToolResult, error) {
+func HandleGetTemplate(_ context.Context, request mcp.CallToolRequest, tm templates.TemplateManager) (*mcp.CallToolResult, error) {
 	argMap, ok := request.Params.Arguments.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("invalid arguments format")
