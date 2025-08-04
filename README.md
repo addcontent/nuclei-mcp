@@ -2,7 +2,7 @@
 
 A Model Context Protocol (MCP) server implementation that integrates Nuclei, a fast and customizable vulnerability scanner, with the MCP ecosystem. This server provides a standardized interface for performing security scans and managing vulnerability assessments programmatically.
 
-##  Features
+## Features
 
 - **Vulnerability Scanning**: Perform comprehensive security scans using Nuclei's powerful scanning engine
 - **Template Management**: Add, list, and manage custom Nuclei templates
@@ -11,7 +11,7 @@ A Model Context Protocol (MCP) server implementation that integrates Nuclei, a f
 - **RESTful API**: Standardized interface for integration with other MCP-compliant tools
 - **Detailed Reporting**: Structured vulnerability reports with severity levels and remediation guidance
 
-##  Tools & Endpoints
+## Tools & Endpoints
 
 ### Core Tools
 
@@ -22,7 +22,7 @@ A Model Context Protocol (MCP) server implementation that integrates Nuclei, a f
 - **list_templates**: View available templates
 - **get_template**: Retrieve details of a specific template
 
-##  Getting Started
+## Getting Started
 
 ### Prerequisites
 
