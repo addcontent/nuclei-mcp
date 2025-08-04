@@ -12,7 +12,7 @@ Ok to proceed? (y) y
 Starting MCP inspector...
 Proxy server listening on port 3000
 
-🔍 MCP Inspector is up and running at http://localhost:5173 🚀
+ MCP Inspector is up and running at http://localhost:5173 
 ```
 
 ## Process Details
