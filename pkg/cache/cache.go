@@ -50,8 +50,8 @@ func NewResultCache(expiry time.Duration, logger *log.Logger) *ResultCache {
 
 // Get retrieves a result from the cache
 func (c *ResultCache) Get(key string) (ScanResult, bool) {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	result, found := c.cache[key]
 	if !found {
@@ -60,7 +60,8 @@ func (c *ResultCache) Get(key string) (ScanResult, bool) {
 
 	// Check if result has expired
 	if time.Since(result.ScanTime) > c.expiry {
-		c.logger.Printf("Cache entry expired: %s", key)
+		c.logger.Printf("Cache entry expired and removed: %s", key)
+		delete(c.cache, key)
 		return ScanResult{}, false
 	}
 
@@ -77,15 +78,28 @@ func (c *ResultCache) Set(key string, result ScanResult) {
 	c.logger.Printf("Cache entry set: %s", key)
 }
 
-// GetAll returns a copy of all items in the cache.
+// GetAll returns a copy of all non-expired items in the cache.
 func (c *ResultCache) GetAll() []ScanResult {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	results := make([]ScanResult, 0, len(c.cache))
-	for _, result := range c.cache {
+	expiredKeys := make([]string, 0)
+
+	for key, result := range c.cache {
+		if time.Since(result.ScanTime) > c.expiry {
+			expiredKeys = append(expiredKeys, key)
+			continue
+		}
 		results = append(results, result)
 	}
+
+	// Clean up expired entries
+	for _, key := range expiredKeys {
+		c.logger.Printf("Removing expired cache entry: %s", key)
+		delete(c.cache, key)
+	}
+
 	return results
 }
 

@@ -6,17 +6,22 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 )
 
-// ConsoleLogger handles logging console output to a file
+type Logger interface {
+	Log(format string, v ...interface{})
+	GetWriter() io.Writer
+	Close() error
+}
+
 type ConsoleLogger struct {
 	file   *os.File
 	logger *log.Logger
 	mu     sync.Mutex
 }
 
-// NewConsoleLogger creates a new console logger that writes to both file and stdout
 func NewConsoleLogger(logPath string) (*ConsoleLogger, error) {
 	logDir := filepath.Dir(logPath)
 	if err := os.MkdirAll(logDir, 0755); err != nil {
@@ -28,37 +33,50 @@ func NewConsoleLogger(logPath string) (*ConsoleLogger, error) {
 		return nil, fmt.Errorf("failed to open log file: %v", err)
 	}
 
+	multiWriter := io.MultiWriter(file, os.Stderr)
 
-  multiWriter := io.MultiWriter(file, os.Stderr)
-                                
-                                
-                                
-                            
 	logger := log.New(multiWriter, "", log.LstdFlags)
 
-	return &ConsoleLogger{
+	cl := &ConsoleLogger{
 		file:   file,
 		logger: logger,
 		mu:     sync.Mutex{},
-	}, nil
+	}
+
+	// Set finalizer to ensure file is closed if Close() is not called
+	runtime.SetFinalizer(cl, (*ConsoleLogger).finalize)
+
+	return cl, nil
 }
 
-// Log writes a message to both the log file and stdout
 func (cl *ConsoleLogger) Log(format string, v ...interface{}) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	cl.logger.Printf(format, v...)
 }
 
-// Close closes the log file
-// GetWriter returns the io.Writer used by the logger.
 func (cl *ConsoleLogger) GetWriter() io.Writer {
 	return cl.logger.Writer()
 }
 
-// Close closes the log file
 func (cl *ConsoleLogger) Close() error {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
-	return cl.file.Close()
+
+	// Clear finalizer since we're explicitly closing
+	runtime.SetFinalizer(cl, nil)
+
+	if cl.file != nil {
+		err := cl.file.Close()
+		cl.file = nil
+		return err
+	}
+	return nil
+}
+
+// finalize is called by the garbage collector if Close() wasn't called
+func (cl *ConsoleLogger) finalize() {
+	if cl.file != nil {
+		cl.file.Close()
+	}
 }

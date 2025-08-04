@@ -28,7 +28,7 @@ logging:
 	assert.NoError(t, err)
 
 	// Load the config from tmp
-	cfg, err := config.LoadConfig(tempDir)
+	cfg, err := config.LoadConfig(configPath)
 	assert.NoError(t, err)
 
 	assert.Equal(t, "test-server", cfg.Server.Name)

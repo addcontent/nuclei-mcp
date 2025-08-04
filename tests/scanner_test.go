@@ -1,10 +1,12 @@
 package tests
 
 import (
+	"io"
 	"testing"
 	"time"
 
 	"nuclei-mcp/pkg/cache"
+	"nuclei-mcp/pkg/logging"
 	"nuclei-mcp/pkg/scanner"
 
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"
@@ -31,13 +33,21 @@ func (m *MockResultCache) GetAll() []cache.ScanResult {
 	return args.Get(0).([]cache.ScanResult)
 }
 
-// MockConsoleLogger is a mock implementation of logging.ConsoleLogger
+// MockConsoleLogger is a mock implementation of logging.Logger
 type MockConsoleLogger struct {
 	mock.Mock
 }
 
+// Ensure MockConsoleLogger implements logging.Logger interface
+var _ logging.Logger = (*MockConsoleLogger)(nil)
+
 func (m *MockConsoleLogger) Log(format string, v ...interface{}) {
 	m.Called(format, v)
+}
+
+func (m *MockConsoleLogger) GetWriter() io.Writer {
+	args := m.Called()
+	return args.Get(0).(io.Writer)
 }
 
 func (m *MockConsoleLogger) Close() error {
@@ -48,14 +58,14 @@ func (m *MockConsoleLogger) Close() error {
 func TestNewScannerService(t *testing.T) {
 	mockCache := new(MockResultCache)
 	mockLogger := new(MockConsoleLogger)
-	service := scanner.NewScannerService(mockCache, mockLogger)
+	service := scanner.NewScannerService(mockCache, mockLogger, "./templates", "basic-test.yaml")
 	assert.NotNil(t, service)
 }
 
 func TestScannerService_CreateCacheKey(t *testing.T) {
 	mockCache := new(MockResultCache)
 	mockLogger := new(MockConsoleLogger)
-	service := scanner.NewScannerService(mockCache, mockLogger)
+	service := scanner.NewScannerService(mockCache, mockLogger, "./templates", "basic-test.yaml")
 
 	key := service.CreateCacheKey("example.com", "high", "http")
 	assert.Equal(t, "example.com:high:http", key)
@@ -67,7 +77,7 @@ func TestScannerService_CreateCacheKey(t *testing.T) {
 func TestScannerService_Scan_CacheHit(t *testing.T) {
 	mockCache := new(MockResultCache)
 	mockLogger := new(MockConsoleLogger)
-	service := scanner.NewScannerService(mockCache, mockLogger)
+	service := scanner.NewScannerService(mockCache, mockLogger, "./templates", "basic-test.yaml")
 
 	expectedResult := cache.ScanResult{
 		Target:   "cached.com",
@@ -89,18 +99,20 @@ func TestScannerService_Scan_CacheMiss(t *testing.T) {
 	// It primarily verifies cache interaction and initial setup.
 	mockCache := new(MockResultCache)
 	mockLogger := new(MockConsoleLogger)
-	service := scanner.NewScannerService(mockCache, mockLogger)
+	// Use a non-existent templates directory to force an error
+	service := scanner.NewScannerService(mockCache, mockLogger, "./nonexistent-templates", "basic-test.yaml")
 
 	mockCache.On("Get", "newscan.com:info:http").Return(cache.ScanResult{}, false).Once()
 	// Expect Log calls for starting scan and error logging
 	mockLogger.On("Log", mock.Anything, mock.Anything).Return().Maybe()
-	// Don't expect Set call since the scan will fail
+	// Expect Set call since the scan might succeed with empty results
+	mockCache.On("Set", mock.Anything, mock.Anything).Return().Maybe()
 
 	// Note: The actual nuclei execution is not mocked here, so this will likely fail
-	// if nuclei.NewNucleiEngine cannot be initialized without actual templates/configs.
-	// For a true unit test, nuclei.NewNucleiEngine would also need to be mocked.
+	// because the templates directory doesn't exist or has no templates
 	result, err := service.Scan("newscan.com", "info", "http", nil)
-	assert.Error(t, err, "Expected an error because nuclei engine initialization is not fully mocked")
+	// The scan should fail due to missing templates directory or templates
+	assert.Error(t, err, "Expected an error because templates directory doesn't exist")
 	assert.Empty(t, result.Findings)
 	mockCache.AssertExpectations(t)
 	mockLogger.AssertExpectations(t)
@@ -109,7 +121,7 @@ func TestScannerService_Scan_CacheMiss(t *testing.T) {
 func TestScannerService_BasicScan_CacheHit(t *testing.T) {
 	mockCache := new(MockResultCache)
 	mockLogger := new(MockConsoleLogger)
-	service := scanner.NewScannerService(mockCache, mockLogger)
+	service := scanner.NewScannerService(mockCache, mockLogger, "./templates", "basic-test.yaml")
 
 	expectedResult := cache.ScanResult{
 		Target:   "basiccached.com",
@@ -128,21 +140,22 @@ func TestScannerService_BasicScan_CacheHit(t *testing.T) {
 
 func TestScannerService_BasicScan_CacheMiss(t *testing.T) {
 	// This test case will not fully execute the nuclei scan due to mocking.
-	// It primarily verifies cache interaction and initial setup.
+	// It primarily verifies cache interaction and initial setup Plans are underway to mock the nuclei engine.
 	mockCache := new(MockResultCache)
 	mockLogger := new(MockConsoleLogger)
-	service := scanner.NewScannerService(mockCache, mockLogger)
+	// Use a non-existent templates directory to force an error
+	service := scanner.NewScannerService(mockCache, mockLogger, "./nonexistent-templates", "basic-test.yaml")
 
 	mockCache.On("Get", "basic:newbasicscan.com").Return(cache.ScanResult{}, false).Once()
 	// Expect multiple Log calls for various operations (starting scan, template creation, etc.)
 	mockLogger.On("Log", mock.Anything, mock.Anything).Return().Maybe()
-	// Don't expect Set call since the scan will likely fail
+	// Expect Set call since the scan might succeed with empty results
+	mockCache.On("Set", mock.Anything, mock.Anything).Return().Maybe()
 
-	// Note: The actual nuclei execution is not mocked here, so this will likely fail
-	// if nuclei.NewNucleiEngine cannot be initialized without actual templates/configs.
-	// For a true unit test, nuclei.NewNucleiEngine would also need to be mocked.
+	//TODO: Mock nuclei.NewNucleiEngine initialization
 	result, err := service.BasicScan("newbasicscan.com")
-	assert.Error(t, err, "Expected an error because nuclei engine initialization is not fully mocked")
+	// The scan should fail because the basic template file doesn't exist
+	assert.Error(t, err, "Expected an error because basic template file doesn't exist")
 	assert.Empty(t, result.Findings)
 	mockCache.AssertExpectations(t)
 	mockLogger.AssertExpectations(t)

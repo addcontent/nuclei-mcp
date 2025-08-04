@@ -16,7 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-func NewNucleiMCPServer(service scanner.ScannerService, logger *log.Logger, tm templates.TemplateManager) *server.MCPServer {
+func NewNucleiMCPServer(service scanner.ScannerServiceInterface, logger *log.Logger, tm templates.TemplateManager) *server.MCPServer {
 	mcpServer := server.NewMCPServer(
 		"nuclei-scanner",
 		"1.0.0",
@@ -60,11 +60,10 @@ func NewNucleiMCPServer(service scanner.ScannerService, logger *log.Logger, tm t
 		return HandleBasicScanTool(ctx, request, service, logger)
 	})
 
-
-	// Add vulnerability resource
+	// Add vulnerability resource here
 	mcpServer.AddResource(mcp.NewResource("vulnerabilities", "Recent Vulnerability Reports"),
 		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			return handleVulnerabilityResource(ctx, request, service, logger)
+			return HandleVulnerabilityResource(ctx, request, service, logger)
 		})
 
 	mcpServer.AddTool(mcp.NewTool("add_template",
@@ -94,38 +93,55 @@ func NewNucleiMCPServer(service scanner.ScannerService, logger *log.Logger, tm t
 func HandleNucleiScanTool(
 	ctx context.Context,
 	request mcp.CallToolRequest,
-	service scanner.ScannerService,
+	service scanner.ScannerServiceInterface,
 	_ *log.Logger,
 ) (*mcp.CallToolResult, error) {
 	argMap, ok := request.Params.Arguments.(map[string]any)
-	if !ok {
+	if !ok || argMap == nil {
 		return nil, fmt.Errorf("invalid arguments format")
 	}
 
-	target, ok := argMap["target"].(string)
+	targetVal, exists := argMap["target"]
+	if !exists || targetVal == nil {
+		return nil, fmt.Errorf("missing target parameter")
+	}
+	target, ok := targetVal.(string)
 	if !ok || target == "" {
-		return nil, fmt.Errorf("invalid or missing target parameter")
+		return nil, fmt.Errorf("invalid target parameter: must be a non-empty string")
 	}
 
-	severity, _ := argMap["severity"].(string)
-	if severity == "" {
-		severity = "info"
+	severity := "info"
+	if severityVal, exists := argMap["severity"]; exists && severityVal != nil {
+		if s, ok := severityVal.(string); ok && s != "" {
+			severity = s
+		}
 	}
 
-	protocols, _ := argMap["protocols"].(string)
-	if protocols == "" {
-		protocols = "http,https"
+	protocols := "http,https"
+	if protocolsVal, exists := argMap["protocols"]; exists && protocolsVal != nil {
+		if p, ok := protocolsVal.(string); ok && p != "" {
+			protocols = p
+		}
 	}
 
-	threadSafe, _ := argMap["thread_safe"].(bool)
+	threadSafe := false
+	if threadSafeVal, exists := argMap["thread_safe"]; exists && threadSafeVal != nil {
+		if ts, ok := threadSafeVal.(bool); ok {
+			threadSafe = ts
+		}
+	}
 
 	var templateIDs []string
-	if ids, ok := argMap["template_ids"].(string); ok && ids != "" {
-		templateIDs = strings.Split(ids, ",")
+	if idsVal, exists := argMap["template_ids"]; exists && idsVal != nil {
+		if ids, ok := idsVal.(string); ok && ids != "" {
+			templateIDs = strings.Split(ids, ",")
+		}
 	}
 
-	if id, ok := argMap["template_id"].(string); ok && id != "" {
-		templateIDs = append(templateIDs, id)
+	if idVal, exists := argMap["template_id"]; exists && idVal != nil {
+		if id, ok := idVal.(string); ok && id != "" {
+			templateIDs = append(templateIDs, id)
+		}
 	}
 
 	var result cache.ScanResult
@@ -140,7 +156,6 @@ func HandleNucleiScanTool(
 	if err != nil {
 		return nil, fmt.Errorf("scan failed: %w", err)
 	}
-
 
 	var responseText string
 	if len(result.Findings) == 0 {
@@ -163,26 +178,28 @@ func HandleNucleiScanTool(
 func HandleBasicScanTool(
 	_ context.Context,
 	request mcp.CallToolRequest,
-	service scanner.ScannerService,
+	service scanner.ScannerServiceInterface,
 	logger *log.Logger,
 ) (*mcp.CallToolResult, error) {
 	argMap, ok := request.Params.Arguments.(map[string]any)
-	if !ok {
+	if !ok || argMap == nil {
 		return nil, fmt.Errorf("invalid arguments format")
 	}
 
-	target, ok := argMap["target"].(string)
-	if !ok || target == "" {
-		return nil, fmt.Errorf("invalid or missing target parameter")
+	targetVal, exists := argMap["target"]
+	if !exists || targetVal == nil {
+		return nil, fmt.Errorf("missing target parameter")
 	}
-
+	target, ok := targetVal.(string)
+	if !ok || target == "" {
+		return nil, fmt.Errorf("invalid target parameter: must be a non-empty string")
+	}
 
 	result, err := service.BasicScan(target)
 	if err != nil {
 		logger.Printf("Basic scan failed: %v", err)
 		return nil, err
 	}
-
 
 	type SimplifiedFinding struct {
 		Name        string `json:"name"`
@@ -193,14 +210,22 @@ func HandleBasicScanTool(
 
 	simplifiedFindings := make([]SimplifiedFinding, 0, len(result.Findings))
 	for _, finding := range result.Findings {
+		if finding == nil {
+			continue
+		}
+
+		severity := "unknown"
+		if finding.Info.SeverityHolder.Severity.String() != "" {
+			severity = finding.Info.SeverityHolder.Severity.String()
+		}
+
 		simplifiedFindings = append(simplifiedFindings, SimplifiedFinding{
 			Name:        finding.Info.Name,
-			Severity:    finding.Info.SeverityHolder.Severity.String(),
+			Severity:    severity,
 			Description: finding.Info.Description,
 			URL:         finding.Host,
 		})
 	}
-
 
 	response := map[string]interface{}{
 		"target":         result.Target,
@@ -208,7 +233,6 @@ func HandleBasicScanTool(
 		"findings_count": len(result.Findings),
 		"findings":       simplifiedFindings,
 	}
-
 
 	responseJSON, err := json.Marshal(response)
 	if err != nil {
@@ -222,7 +246,7 @@ func HandleBasicScanTool(
 func HandleVulnerabilityResource(
 	_ context.Context,
 	_ mcp.ReadResourceRequest,
-	service scanner.ScannerService,
+	service scanner.ScannerServiceInterface,
 	_ *log.Logger,
 ) ([]mcp.ResourceContents, error) {
 	results := service.GetAll()
@@ -235,17 +259,24 @@ func HandleVulnerabilityResource(
 			"findings":  len(result.Findings),
 		}
 
-
-
 		if len(result.Findings) > 0 {
 			var sampleFindings []map[string]string
 
 			count := min(5, len(result.Findings))
 			for i := 0; i < count; i++ {
 				finding := result.Findings[i]
+				if finding == nil {
+					continue
+				}
+
+				severity := "unknown"
+				if finding.Info.SeverityHolder.Severity.String() != "" {
+					severity = finding.Info.SeverityHolder.Severity.String()
+				}
+
 				sampleFindings = append(sampleFindings, map[string]string{
 					"name":        finding.Info.Name,
-					"severity":    finding.Info.SeverityHolder.Severity.String(),
+					"severity":    severity,
 					"description": finding.Info.Description,
 					"url":         finding.Host,
 				})
@@ -286,18 +317,26 @@ func min(x, y int) int {
 
 func HandleAddTemplate(_ context.Context, request mcp.CallToolRequest, tm templates.TemplateManager) (*mcp.CallToolResult, error) {
 	argMap, ok := request.Params.Arguments.(map[string]any)
-	if !ok {
+	if !ok || argMap == nil {
 		return nil, fmt.Errorf("invalid arguments format")
 	}
 
-	name, ok := argMap["name"].(string)
+	nameVal, exists := argMap["name"]
+	if !exists || nameVal == nil {
+		return nil, fmt.Errorf("missing name parameter")
+	}
+	name, ok := nameVal.(string)
 	if !ok || name == "" {
-		return nil, fmt.Errorf("invalid or missing name parameter")
+		return nil, fmt.Errorf("invalid name parameter: must be a non-empty string")
 	}
 
-	content, ok := argMap["content"].(string)
+	contentVal, exists := argMap["content"]
+	if !exists || contentVal == nil {
+		return nil, fmt.Errorf("missing content parameter")
+	}
+	content, ok := contentVal.(string)
 	if !ok || content == "" {
-		return nil, fmt.Errorf("invalid or missing content parameter")
+		return nil, fmt.Errorf("invalid content parameter: must be a non-empty string")
 	}
 
 	if err := tm.AddTemplate(name, []byte(content)); err != nil {
@@ -322,13 +361,17 @@ func HandleListTemplates(_ context.Context, _ mcp.CallToolRequest, tm templates.
 
 func HandleGetTemplate(_ context.Context, request mcp.CallToolRequest, tm templates.TemplateManager) (*mcp.CallToolResult, error) {
 	argMap, ok := request.Params.Arguments.(map[string]any)
-	if !ok {
+	if !ok || argMap == nil {
 		return nil, fmt.Errorf("invalid arguments format")
 	}
 
-	name, ok := argMap["name"].(string)
+	nameVal, exists := argMap["name"]
+	if !exists || nameVal == nil {
+		return nil, fmt.Errorf("missing name parameter")
+	}
+	name, ok := nameVal.(string)
 	if !ok || name == "" {
-		return nil, fmt.Errorf("invalid or missing name parameter")
+		return nil, fmt.Errorf("invalid name parameter: must be a non-empty string")
 	}
 
 	content, err := tm.GetTemplate(name)

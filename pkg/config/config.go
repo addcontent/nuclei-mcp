@@ -30,24 +30,25 @@ type CacheConfig struct {
 }
 
 type LoggingConfig struct {
-	Level        string `mapstructure:"level"`
-	Path         string `mapstructure:"path"`
-	MaxSizeMB    int    `mapstructure:"max_size_mb"`
-	MaxBackups   int    `mapstructure:"max_backups"`
-	MaxAgeDays   int    `mapstructure:"max_age_days"`
-	Compress     bool   `mapstructure:"compress"`
+	Level      string `mapstructure:"level"`
+	Path       string `mapstructure:"path"`
+	MaxSizeMB  int    `mapstructure:"max_size_mb"`
+	MaxBackups int    `mapstructure:"max_backups"`
+	MaxAgeDays int    `mapstructure:"max_age_days"`
+	Compress   bool   `mapstructure:"compress"`
 }
 
 // NucleiConfig stores Nuclei specific configuration.
 type NucleiConfig struct {
 	TemplatesDirectory string        `mapstructure:"templates_directory"`
-	Timeout           time.Duration `mapstructure:"timeout"`
-	RateLimit         int           `mapstructure:"rate_limit"`
-	BulkSize          int           `mapstructure:"bulk_size"`
-	TemplateThreads   int           `mapstructure:"template_threads"`
-	Headless          bool          `mapstructure:"headless"`
-	ShowBrowser       bool          `mapstructure:"show_browser"`
-	SystemResolvers   bool          `mapstructure:"system_resolvers"`
+	BasicTemplateName  string        `mapstructure:"basic_template_name"`
+	Timeout            time.Duration `mapstructure:"timeout"`
+	RateLimit          int           `mapstructure:"rate_limit"`
+	BulkSize           int           `mapstructure:"bulk_size"`
+	TemplateThreads    int           `mapstructure:"template_threads"`
+	Headless           bool          `mapstructure:"headless"`
+	ShowBrowser        bool          `mapstructure:"show_browser"`
+	SystemResolvers    bool          `mapstructure:"system_resolvers"`
 }
 
 func LoadConfig(path string) (config Config, err error) {
@@ -64,6 +65,7 @@ func LoadConfig(path string) (config Config, err error) {
 	viper.SetDefault("logging.max_age_days", 30)
 	viper.SetDefault("logging.compress", true)
 	viper.SetDefault("nuclei.templates_directory", "nuclei-templates")
+	viper.SetDefault("nuclei.basic_template_name", "basic-test.yaml")
 
 	// Set config file
 	if path != "" {
@@ -83,7 +85,6 @@ func LoadConfig(path string) (config Config, err error) {
 			return config, fmt.Errorf("error reading config file: %w", err)
 		}
 	}
-
 
 	// Unmarshal config
 	err = viper.Unmarshal(&config)
