@@ -99,7 +99,7 @@ npx @modelcontextprotocol/inspector go run cmd/nuclei-mcp/main.go
 
 The inspector UI will be available at [http://localhost:5173](http://localhost:5173)
 
-##  Configuration
+## Configuration
 
 Configuration can be managed through a YAML configuration file or environment variables. The server looks for configuration in the following locations (in order of precedence):
 
@@ -174,7 +174,7 @@ Example MCP client configuration (JSON):
 }
 ```
 
-##  Releases
+## Releases
 
 This project uses [GoReleaser](https://goreleaser.com/) for automated releases. Each release includes:
 
@@ -188,10 +188,10 @@ This project uses [GoReleaser](https://goreleaser.com/) for automated releases. 
 To create a new release:
 
 1. **Tag the release:**
-   ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
-   ```
+    ```bash
+    git tag v1.0.0
+    git push origin v1.0.0
+    ```
 
 2. **GitHub Actions will automatically:**
    - Build binaries for all supported platforms
@@ -212,11 +212,11 @@ goreleaser release --snapshot --clean
 goreleaser check
 ```
 
-##  Important Note
+## Important Note
 
 This project is under active development. Breaking changes may be introduced in future releases. Please ensure you pin to a specific version when using this in production environments.
 
-##  Documentation
+## Documentation
 
 - [MCP Protocol Documentation](https://modelcontextprotocol.io)
 - [Nuclei Documentation](https://nuclei.projectdiscovery.io/)
@@ -230,6 +230,6 @@ Contributions are welcome! Please read our [Contributing Guidelines](./CONTRIBUT
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Related Projects
- Big thanks to the following projects that inspired and contributed to this implementation:
+Big thanks to the following projects that inspired and contributed to this implementation:
 - [Nuclei](https://github.com/projectdiscovery/nuclei)
 - [MCP Go](https://github.com/mark3labs/mcp-go)
