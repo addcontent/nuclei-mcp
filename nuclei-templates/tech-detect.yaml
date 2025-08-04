@@ -1,0 +1,56 @@
+id: tech-detect
+info:
+  name: Wappalyzer Technology Detection
+  author: pdteam
+  severity: info
+  description: Detects technology stack used on the website
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    redirects: true
+    max-redirects: 2
+    matchers-condition: or
+    matchers:
+      - type: word
+        name: apache
+        words:
+          - "Apache"
+        part: header
+
+      - type: word
+        name: nginx
+        words:
+          - "nginx"
+        part: header
+
+      - type: word
+        name: iis
+        words:
+          - "Microsoft-IIS"
+        part: header
+
+      - type: word
+        name: php
+        words:
+          - "X-Powered-By: PHP"
+        part: header
+
+      - type: word
+        name: wordpress
+        words:
+          - "wp-content"
+        part: body
+
+      - type: word
+        name: drupal
+        words:
+          - "Drupal.settings"
+        part: body
+
+      - type: word
+        name: joomla
+        words:
+          - "Joomla!"
+        part: body

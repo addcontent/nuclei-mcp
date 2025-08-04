@@ -1,0 +1,15 @@
+id: http-test
+info:
+  name: HTTP Test Template
+  author: MCP
+  severity: info
+  description: Basic HTTP test template for nuclei
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}"
+    matchers:
+      - type: status
+        status:
+          - 200

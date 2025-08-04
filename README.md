@@ -115,6 +115,33 @@ nuclei:
 
 All configuration options can also be set using environment variables with the `NUCLEI_MCP_` prefix (e.g., `NUCLEI_MCP_SERVER_PORT=3000`). Nested configuration can be set using double underscores (e.g., `NUCLEI_MCP_LOGGING_LEVEL=debug`).
 
+### MCP Client Configuration
+
+To connect an MCP client to the Nuclei MCP server, use the following connection parameters:
+
+- **Transport**: `stdio` (when running as a subprocess) or `http` (when running as a standalone server)
+- **Command**: `go run cmd/nuclei-mcp/main.go` (for development) or the compiled binary path
+- **Working Directory**: The root directory of the nuclei-mcp project
+
+For HTTP connections, the server will be available at `http://127.0.0.1:3000` by default (configurable via the `server.port` and `server.host` configuration options).
+
+Example MCP client configuration (JSON):
+
+```json
+{
+  "mcpServers": {
+    "nuclei-scanner": {
+      "command": "go",
+      "args": ["run", "cmd/nuclei-mcp/main.go"],
+      "env": {
+        "NUCLEI_MCP_SERVER_PORT": "3000",
+        "NUCLEI_MCP_CACHE_ENABLED": "true"
+      }
+    }
+  }
+}
+```
+
 ## ⚠️ Important Note
 
 This project is under active development. Breaking changes may be introduced in future releases. Please ensure you pin to a specific version when using this in production environments.
@@ -123,7 +150,6 @@ This project is under active development. Breaking changes may be introduced in 
 
 - [MCP Protocol Documentation](https://modelcontextprotocol.io)
 - [Nuclei Documentation](https://nuclei.projectdiscovery.io/)
-- [API Reference](./docs/API.md)
 
 ## 🤝 Contributing
 
