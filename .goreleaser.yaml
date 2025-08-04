@@ -1,0 +1,177 @@
+# GoReleaser configuration for nuclei-mcp
+project_name: nuclei-mcp
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: nuclei-mcp
+    main: ./cmd/nuclei-mcp
+    binary: nuclei-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -X main.builtBy=goreleaser
+
+archives:
+  - id: nuclei-mcp
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE*
+      - CONTRIBUTING.md
+      - config.yaml
+      - nuclei-templates/*
+      - templates/*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - '^style:'
+      - '^refactor:'
+      - Merge pull request
+      - Merge branch
+      - go mod tidy
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: 'Bug fixes'
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: 'Performance improvements'
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}}-v{{.Version}}"
+  header: |
+    ## Nuclei MCP Server {{ .Tag }}
+
+    New release of Nuclei MCP Server!
+  footer: |
+    ## Installation
+
+    ### Binary Download
+    Download the appropriate binary for your system from the assets below.
+
+    ### Go Install
+    ```bash
+    go install github.com/your-org/nuclei-mcp/cmd/nuclei-mcp@{{ .Tag }}
+    ```
+
+    ---
+    **Full Changelog**: https://github.com/your-org/nuclei-mcp/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+# Docker builds disabled for local testing - uncomment and start Docker if needed
+# dockers:
+#   - image_templates:
+#       - "ghcr.io/your-org/nuclei-mcp:{{ .Version }}-amd64"
+#       - "ghcr.io/your-org/nuclei-mcp:latest-amd64"
+#     dockerfile: Dockerfile
+#     use: buildx
+#     build_flag_templates:
+#       - "--pull"
+#       - "--label=org.opencontainers.image.created={{.Date}}"
+#       - "--label=org.opencontainers.image.title={{.ProjectName}}"
+#       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+#       - "--label=org.opencontainers.image.version={{.Version}}"
+#       - "--label=org.opencontainers.image.source={{.GitURL}}"
+#       - "--platform=linux/amd64"
+#   - image_templates:
+#       - "ghcr.io/your-org/nuclei-mcp:{{ .Version }}-arm64"
+#       - "ghcr.io/your-org/nuclei-mcp:latest-arm64"
+#     dockerfile: Dockerfile
+#     use: buildx
+#     build_flag_templates:
+#       - "--pull"
+#       - "--label=org.opencontainers.image.created={{.Date}}"
+#       - "--label=org.opencontainers.image.title={{.ProjectName}}"
+#       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+#       - "--label=org.opencontainers.image.version={{.Version}}"
+#       - "--label=org.opencontainers.image.source={{.GitURL}}"
+#       - "--platform=linux/arm64"
+#     goarch: arm64
+
+# docker_manifests:
+#   - name_template: "ghcr.io/your-org/nuclei-mcp:{{ .Version }}"
+#     image_templates:
+#       - "ghcr.io/your-org/nuclei-mcp:{{ .Version }}-amd64"
+#       - "ghcr.io/your-org/nuclei-mcp:{{ .Version }}-arm64"
+#   - name_template: "ghcr.io/your-org/nuclei-mcp:latest"
+#     image_templates:
+#       - "ghcr.io/your-org/nuclei-mcp:latest-amd64"
+#       - "ghcr.io/your-org/nuclei-mcp:latest-arm64"
+
+# Code signing disabled for local testing - uncomment and install cosign if needed
+# signs:
+#   - cmd: cosign
+#     env:
+#       - COSIGN_EXPERIMENTAL=1
+#     certificate: '${artifact}.pem'
+#     args:
+#       - sign-blob
+#       - '--output-certificate=${certificate}'
+#       - '--output-signature=${signature}'
+#       - '${artifact}'
+#       - --yes
+#     artifacts: checksum
+#     output: true
+
+# docker_signs:
+#   - cmd: cosign
+#     env:
+#       - COSIGN_EXPERIMENTAL=1
+#     artifacts: images
+#     output: true
+#     args:
+#       - 'sign'
+#       - '${artifact}@${digest}'
+#       - --yes
+
+# SBOM generation disabled - uncomment and install syft if needed
+# sboms:
+#   - artifacts: archive
+#   - id: source
+#     artifacts: source

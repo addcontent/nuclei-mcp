@@ -26,11 +26,32 @@ A Model Context Protocol (MCP) server implementation that integrates Nuclei, a f
 
 ### Prerequisites
 
-- Go 1.16+
 - Nuclei (will be automatically downloaded if not present)
-- Node.js 14+ (for MCP Inspector)
+- Node.js 14+ (for MCP Inspector, optional)
 
 ### Installation
+
+#### Option 1: Download Pre-built Binary (Recommended)
+
+1. Download the latest release for your platform from the [Releases page](https://github.com/your-org/nuclei-mcp/releases)
+2. Extract the archive
+3. Run the binary:
+
+   ```bash
+   # Linux/macOS
+   ./nuclei-mcp
+   
+   # Windows
+   nuclei-mcp.exe
+   ```
+
+#### Option 2: Install with Go
+
+```bash
+go install github.com/your-org/nuclei-mcp/cmd/nuclei-mcp@latest
+```
+
+#### Option 3: Build from Source
 
 1. Clone the repository:
 
@@ -45,11 +66,22 @@ A Model Context Protocol (MCP) server implementation that integrates Nuclei, a f
    go mod download
    ```
 
+3. Build and run:
+
+   ```bash
+   go build -o nuclei-mcp ./cmd/nuclei-mcp
+   ./nuclei-mcp
+   ```
+
 ### Running the Server
 
 Start the MCP server:
 
 ```bash
+# If using pre-built binary
+./nuclei-mcp
+
+# If built from source
 go run cmd/nuclei-mcp/main.go
 ```
 
@@ -142,24 +174,62 @@ Example MCP client configuration (JSON):
 }
 ```
 
-## ⚠️ Important Note
+##  Releases
+
+This project uses [GoReleaser](https://goreleaser.com/) for automated releases. Each release includes:
+
+- **Cross-platform binaries** for Linux, macOS, and Windows (amd64 and arm64)
+- **Checksums** for integrity verification
+- **Automated changelog** generation
+- **GitHub Actions** for CI/CD
+
+### Creating a Release
+
+To create a new release:
+
+1. **Tag the release:**
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+
+2. **GitHub Actions will automatically:**
+   - Build binaries for all supported platforms
+   - Create release archives
+   - Generate checksums
+   - Create a GitHub release with changelog
+   - Upload all artifacts
+
+### Manual Release (Development)
+
+For testing releases locally:
+
+```bash
+# Test release build (no publishing)
+goreleaser release --snapshot --clean
+
+# Check configuration
+goreleaser check
+```
+
+##  Important Note
 
 This project is under active development. Breaking changes may be introduced in future releases. Please ensure you pin to a specific version when using this in production environments.
 
-## 📚 Documentation
+##  Documentation
 
 - [MCP Protocol Documentation](https://modelcontextprotocol.io)
 - [Nuclei Documentation](https://nuclei.projectdiscovery.io/)
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please read our [Contributing Guidelines](./CONTRIBUTING.md) for details.
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🔗 Related Projects
-
+## Related Projects
+ Big thanks to the following projects that inspired and contributed to this implementation:
 - [Nuclei](https://github.com/projectdiscovery/nuclei)
 - [MCP Go](https://github.com/mark3labs/mcp-go)
