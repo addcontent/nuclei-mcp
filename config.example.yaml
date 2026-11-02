@@ -1,0 +1,38 @@
+# Example nuclei-mcp configuration. Every key is optional; the values below
+# are the defaults. Copy to ~/.nuclei-mcp/config.yaml (or pass --config).
+#
+# Lookup order when --config is not given:
+#   ./config.yaml, ~/.nuclei-mcp/config.yaml, /etc/nuclei-mcp/config.yaml
+# Every key can also be set from the environment: NUCLEI_MCP_ + the key path in
+# upper case with dots as underscores, e.g. NUCLEI_MCP_LOGGING_LEVEL=debug.
+# Relative paths are resolved against the directory of this file.
+
+cache:
+  enabled: true        # reuse the result of an identical scan within `expiry`
+  expiry: 1h
+  max_size: 100        # scan results kept in memory
+
+logging:
+  level: info          # debug, info, warn, error
+  path: ~/.nuclei-mcp/logs/nuclei-mcp.log   # empty = stderr only
+
+nuclei:
+  templates_directory: ~/.nuclei-mcp/templates  # built-in templates are copied here on first run
+  basic_template_name: basic-test.yaml
+  timeout: 10s         # per request
+  scan_timeout: 10m    # whole scan; partial results are returned on timeout
+  rate_limit: 150      # requests per second
+  bulk_size: 25        # hosts scanned in parallel
+  template_threads: 25 # templates run in parallel
+  retries: 1
+  system_resolvers: false
+
+security:
+  allow_template_writes: false  # expose the add_template tool
+  interactsh: false             # out-of-band callbacks to public interactsh servers
+  allow_private_targets: false  # loopback, private and link-local addresses
+  allowed_targets: []           # if set, only these hosts, *.domains or CIDRs
+  denied_targets: []            # always refused
+
+output:
+  max_findings: 50     # default page size for findings in tool results

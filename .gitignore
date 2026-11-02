@@ -28,7 +28,6 @@ go.work
 
 # Dependencies
 /vendor/
-/go.sum
 
 # IDE - VSCode
 .vscode/*

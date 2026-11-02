@@ -1,115 +1,140 @@
+// Command nuclei-mcp serves the Nuclei vulnerability scanner over the Model
+// Context Protocol on stdin/stdout.
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
-	"nuclei-mcp/pkg/api"
-	"nuclei-mcp/pkg/cache"
-	"nuclei-mcp/pkg/config"
-	"nuclei-mcp/pkg/logging"
-	"nuclei-mcp/pkg/scanner"
-	"nuclei-mcp/pkg/templates"
+	"github.com/addcontent/nuclei-mcp/pkg/api"
+	"github.com/addcontent/nuclei-mcp/pkg/cache"
+	"github.com/addcontent/nuclei-mcp/pkg/config"
+	"github.com/addcontent/nuclei-mcp/pkg/logging"
+	"github.com/addcontent/nuclei-mcp/pkg/scanner"
+	"github.com/addcontent/nuclei-mcp/pkg/scope"
+	"github.com/addcontent/nuclei-mcp/pkg/templates"
 
-	mcp "github.com/mark3labs/mcp-go/server"
-	"github.com/sirupsen/logrus"
+	"github.com/mark3labs/mcp-go/server"
 )
 
-func setupSignalHandling() chan os.Signal {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	return sigs
-}
-
-// initalioze the logging functions, change log state for different log levels
-func setupLogging(cfg config.LoggingConfig) (*logging.ConsoleLogger, error) {
-
-	logDir := filepath.Dir(cfg.Path)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create log directory: %w", err)
-	}
-
-	logger, err := logging.NewConsoleLogger(cfg.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize logger: %w", err)
-	}
-
-	level, err := logrus.ParseLevel(cfg.Level)
-	if err != nil {
-		logger.Log("Warning: Invalid log level '%s', defaulting to 'info'", cfg.Level)
-		level = logrus.InfoLevel
-	}
-	logrus.SetLevel(level)
-
-	return logger, nil
-}
+// Set by the release build (see .goreleaser.yaml).
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
 
-	// load configs here we are using viper
-	cfg, err := config.LoadConfig("")
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("nuclei-mcp", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "path to a config.yaml (default: ./config.yaml, then "+config.DefaultHome()+"/config.yaml, then /etc/nuclei-mcp/config.yaml)")
+	showVersion := fs.Bool("version", false, "print version and exit")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *showVersion {
+		fmt.Fprintf(stderr, "nuclei-mcp %s (commit %s, built %s)\n", version, commit, date)
+		return 0
+	}
+
+	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		fmt.Fprintf(stderr, "nuclei-mcp: %v\n", err)
+		return 1
 	}
 
-	consoleLogger, err := setupLogging(cfg.Logging)
+	logger, closeLog, warn := logging.New(cfg.Logging.Path, cfg.Logging.Level)
+	defer closeLog()
+	if warn != nil {
+		logger.Warn("log file unavailable", "error", warn)
+	}
+	logger.Info("starting nuclei-mcp", "version", version, "config", orNone(cfg.File),
+		"templates", cfg.Nuclei.TemplatesDirectory)
+
+	if n, err := templates.SeedBuiltins(cfg.Nuclei.TemplatesDirectory); err != nil {
+		logger.Error("cannot prepare templates directory", "error", err)
+		return 1
+	} else if n > 0 {
+		logger.Info("installed built-in templates", "count", n)
+	}
+
+	templateManager, err := templates.NewTemplateManager(cfg.Nuclei.TemplatesDirectory)
 	if err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+		logger.Error("cannot open templates directory", "error", err)
+		return 1
 	}
-	defer consoleLogger.Close()
+	defer templateManager.Close()
 
-	consoleLogger.Log("Starting %s v%s", cfg.Server.Name, cfg.Server.Version)
-	consoleLogger.Log("Server will listen on %s:%d", cfg.Server.Host, cfg.Server.Port)
-
-	var resultCache cache.ResultCacheInterface
-	if cfg.Cache.Enabled {
-		consoleLogger.Log("Initializing cache with expiry: %v", cfg.Cache.Expiry)
-		resultCache = cache.NewResultCache(cfg.Cache.Expiry, log.New(os.Stderr, "[Cache] ", log.LstdFlags))
-	} else {
-		consoleLogger.Log("Cache is disabled")
-		resultCache = cache.NewNoopCache()
-	}
-
-	templatesDir, err := filepath.Abs(cfg.Nuclei.TemplatesDirectory)
+	scopeChecker, err := scope.New(cfg.Security.AllowPrivateTargets, cfg.Security.AllowedTargets, cfg.Security.DeniedTargets)
 	if err != nil {
-		consoleLogger.Log("Error resolving templates directory path: %v", err)
-		os.Exit(1)
+		logger.Error("invalid security settings", "error", err)
+		return 1
 	}
-	consoleLogger.Log("Using templates directory: %s", templatesDir)
+	logger.Info("security settings",
+		"add_template", cfg.Security.AllowTemplateWrites,
+		"interactsh", cfg.Security.Interactsh,
+		"private_targets", cfg.Security.AllowPrivateTargets,
+		"allowed_targets", len(cfg.Security.AllowedTargets),
+		"denied_targets", len(cfg.Security.DeniedTargets))
 
-	scannerService := scanner.NewScannerService(resultCache, consoleLogger, templatesDir, cfg.Nuclei.BasicTemplateName)
+	store := cache.New(cfg.Cache.Enabled, cfg.Cache.Expiry, cfg.Cache.MaxSize)
+	scanService := scanner.New(scanner.Options{
+		TemplatesDir:         cfg.Nuclei.TemplatesDirectory,
+		BasicTemplate:        cfg.Nuclei.BasicTemplateName,
+		ScanTimeout:          cfg.Nuclei.ScanTimeout,
+		RequestTimeout:       cfg.Nuclei.Timeout,
+		Retries:              cfg.Nuclei.Retries,
+		RateLimit:            cfg.Nuclei.RateLimit,
+		HostConcurrency:      cfg.Nuclei.BulkSize,
+		TemplateConcurrency:  cfg.Nuclei.TemplateThreads,
+		SystemResolvers:      cfg.Nuclei.SystemResolvers,
+		Interactsh:           cfg.Security.Interactsh,
+		RestrictLocalNetwork: !scopeChecker.AllowsLocalNetwork(),
+		Scope:                scopeChecker,
+		Fingerprint:          templateManager.Fingerprint,
+		Logger:               logger,
+	}, store)
 
-	templateManager, err := templates.NewTemplateManager(templatesDir)
-	if err != nil {
-		consoleLogger.Log("Failed to initialize template manager: %v", err)
-		os.Exit(1)
+	mcpServer := api.NewServer(scanService, templateManager, api.Config{
+		Name:                "nuclei-mcp",
+		Version:             version,
+		AllowTemplateWrites: cfg.Security.AllowTemplateWrites,
+		PageSize:            cfg.Output.MaxFindings,
+		Logger:              logger,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	stdio := server.NewStdioServer(mcpServer)
+	stdio.SetErrorLogger(slog.NewLogLogger(logger.Handler(), slog.LevelError))
+	err = stdio.Listen(ctx, stdin, stdout)
+	switch {
+	case err == nil:
+		logger.Info("client disconnected, shutting down")
+	case errors.Is(err, context.Canceled):
+		logger.Info("signal received, shutting down")
+	default:
+		logger.Error("server stopped", "error", err)
+		return 1
 	}
+	return 0
+}
 
-	mcpServer := api.NewNucleiMCPServer(scannerService, log.New(os.Stderr, "[MCP] ", log.LstdFlags), templateManager)
-
-	serverErr := make(chan error, 1)
-	go func() {
-		consoleLogger.Log("Starting MCP server with stdio transport")
-		if err := mcp.ServeStdio(mcpServer); err != nil {
-			serverErr <- fmt.Errorf("error starting MCP server: %w", err)
-			return
-		}
-	}()
-
-	signals := setupSignalHandling()
-
-	select {
-	case err := <-serverErr:
-		consoleLogger.Log("Server error: %v", err)
-		os.Exit(1)
-	case sig := <-signals:
-		consoleLogger.Log("Received signal: %v. Shutting down...", sig)
-
-		consoleLogger.Log("Shutting down MCP server...")
-		consoleLogger.Log("Server shutdown complete")
+func orNone(s string) string {
+	if s == "" {
+		return "none (defaults)"
 	}
+	return s
 }

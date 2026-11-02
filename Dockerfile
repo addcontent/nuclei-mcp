@@ -1,57 +1,34 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
-# Install git and ca-certificates (needed for go modules and HTTPS)
-RUN apk add --no-cache git ca-certificates tzdata
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
 
-# Set working directory
-WORKDIR /app
-
-# Copy go mod files
 COPY go.mod go.sum ./
-
-# Download dependencies
 RUN go mod download
 
-# Copy source code
 COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-s -w -X main.version=${VERSION}" \
+    -o /out/nuclei-mcp ./cmd/nuclei-mcp
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o nuclei-mcp ./cmd/nuclei-mcp
+# Runtime stage
+FROM alpine:3.22
 
-# Final stage
-FROM alpine:latest
+RUN apk --no-cache add ca-certificates \
+ && addgroup -g 1001 -S nuclei \
+ && adduser -u 1001 -S nuclei -G nuclei -h /home/nuclei
 
-# Install ca-certificates for HTTPS requests
-RUN apk --no-cache add ca-certificates
+COPY --from=builder /out/nuclei-mcp /usr/local/bin/nuclei-mcp
 
-# Create non-root user
-RUN addgroup -g 1001 -S nuclei && \
-    adduser -u 1001 -S nuclei -G nuclei
-
-# Set working directory
-WORKDIR /app
-
-# Copy the binary from builder stage
-COPY --from=builder /app/nuclei-mcp .
-
-# Copy configuration and templates
-COPY --from=builder /app/config.yaml .
-COPY --from=builder /app/nuclei-templates ./nuclei-templates/
-COPY --from=builder /app/templates ./templates/
-
-# Change ownership to nuclei user
-RUN chown -R nuclei:nuclei /app
-
-# Switch to non-root user
 USER nuclei
+WORKDIR /home/nuclei
+# Templates are embedded in the binary and copied to ~/.nuclei-mcp/templates
+# on first run. Mount a volume there to keep your own templates.
+ENV NUCLEI_MCP_LOGGING_PATH=""
 
-# Expose port (if needed for HTTP mode)
-EXPOSE 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD pgrep nuclei-mcp || exit 1
-
-# Run the application
-ENTRYPOINT ["./nuclei-mcp"]
+# MCP over stdio: run with `docker run -i --rm nuclei-mcp`.
+# There is no network port and no health check: the process lives exactly as
+# long as the client keeps stdin open.
+ENTRYPOINT ["/usr/local/bin/nuclei-mcp"]

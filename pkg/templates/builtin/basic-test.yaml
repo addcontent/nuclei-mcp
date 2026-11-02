@@ -5,7 +5,7 @@ info:
   severity: info
   description: Basic test template for nuclei
 
-requests:
+http:
   - method: GET
     path:
       - "{{BaseURL}}"

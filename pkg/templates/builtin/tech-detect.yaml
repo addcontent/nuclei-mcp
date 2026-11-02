@@ -5,7 +5,7 @@ info:
   severity: info
   description: Detects technology stack used on the website
 
-requests:
+http:
   - method: GET
     path:
       - "{{BaseURL}}"
