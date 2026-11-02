@@ -1,415 +1,418 @@
+// Package api exposes the scanner as MCP tools and resources.
 package api
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/addcontent/nuclei-mcp/pkg/cache"
 	"github.com/addcontent/nuclei-mcp/pkg/scanner"
-	"github.com/addcontent/nuclei-mcp/pkg/scope"
-	"github.com/addcontent/nuclei-mcp/pkg/templates"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// Options configures which tools are exposed and how targets are checked.
-type Options struct {
-	// AllowTemplateWrites registers the add_template tool.
+// Scanner is what the tools need from the scan service.
+type Scanner interface {
+	Scan(ctx context.Context, req scanner.Request) (scanner.Outcome, error)
+	BasicScan(ctx context.Context, target string) (scanner.Outcome, error)
+	Recent() []cache.ScanResult
+	Get(id string) (cache.ScanResult, bool)
+}
+
+// Templates is what the tools need from the template store.
+type Templates interface {
+	AddTemplate(name string, content []byte) error
+	ListTemplates() ([]string, error)
+	GetTemplate(name string) ([]byte, error)
+}
+
+// Config shapes the server.
+type Config struct {
+	Name    string
+	Version string
+	// AllowTemplateWrites registers add_template.
 	AllowTemplateWrites bool
-	// Scope, when set, is checked before every scan.
-	Scope *scope.Checker
+	// PageSize is the default number of findings per result.
+	PageSize int
+	Logger   *slog.Logger
 }
 
-// checkScope returns a tool error result when the target is out of scope.
-func checkScope(ctx context.Context, opts Options, request mcp.CallToolRequest) *mcp.CallToolResult {
-	if opts.Scope == nil {
-		return nil
-	}
-	target, err := request.RequireString("target")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error())
-	}
-	if err := opts.Scope.Check(ctx, target); err != nil {
-		return mcp.NewToolResultError(err.Error())
-	}
-	return nil
-}
+const (
+	maxPageSize      = 500
+	maxListTemplates = 1000
+	scansURI         = "nuclei://scans"
+	scanURIPrefix    = "nuclei://scans/"
+)
 
-func NewNucleiMCPServer(service scanner.ScannerServiceInterface, logger *log.Logger, tm templates.TemplateManager, opts Options) *server.MCPServer {
-	mcpServer := server.NewMCPServer(
-		"nuclei-scanner",
-		"1.0.0",
-		server.WithLogging(),
+const instructions = `Runs Nuclei vulnerability scans. Scans send real, sometimes intrusive, network traffic: only scan systems the user owns or is authorized to test, and confirm the target with the user first. Start with basic_scan or a narrow nuclei_scan (severity, tags, template_ids). Large results are paged: call get_scan_results with the scan_id to read more.`
+
+// NewServer builds the MCP server.
+func NewServer(sc Scanner, tm Templates, cfg Config) *server.MCPServer {
+	if cfg.Name == "" {
+		cfg.Name = "nuclei-mcp"
+	}
+	if cfg.Version == "" {
+		cfg.Version = "dev"
+	}
+	if cfg.PageSize < 1 {
+		cfg.PageSize = 50
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	h := &handlers{sc: sc, tm: tm, cfg: cfg}
+
+	s := server.NewMCPServer(cfg.Name, cfg.Version,
+		server.WithRecovery(),
+		server.WithToolCapabilities(false),
+		server.WithResourceCapabilities(false, false),
+		server.WithInstructions(instructions),
 	)
 
-	mcpServer.AddTool(mcp.NewTool("nuclei_scan",
-		mcp.WithDescription("Performs a Nuclei vulnerability scan on a target"),
-		mcp.WithString("target",
-			mcp.Description("Target URL or IP to scan"),
-			mcp.Required(),
-		),
-		mcp.WithString("severity",
-			mcp.Description("Minimum severity level (info, low, medium, high, critical)"),
-			mcp.DefaultString("info"),
-		),
-		mcp.WithString("protocols",
-			mcp.Description("Protocols to scan (comma-separated: http,https,tcp,etc)"),
-			mcp.DefaultString("http"),
-		),
-		mcp.WithBoolean("thread_safe",
-			mcp.Description("Use thread-safe engine for scanning"),
-		),
-		mcp.WithString("template_ids",
-			mcp.Description("Comma-separated template IDs to run (e.g. \"self-signed-ssl,nameserver-fingerprint\")"),
-		),
-		mcp.WithString("template_id",
-			mcp.Description("Single template ID to run (alternative to template_ids)"),
-		),
-	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if refused := checkScope(ctx, opts, request); refused != nil {
-			return refused, nil
-		}
-		return HandleNucleiScanTool(ctx, request, service, logger)
-	})
-
-	mcpServer.AddTool(mcp.NewTool("basic_scan",
-		mcp.WithDescription("Performs a basic Nuclei vulnerability scan on a target without requiring template IDs"),
-		mcp.WithString("target",
-			mcp.Description("Target URL or IP to scan"),
-			mcp.Required(),
-		),
-	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if refused := checkScope(ctx, opts, request); refused != nil {
-			return refused, nil
-		}
-		return HandleBasicScanTool(ctx, request, service, logger)
-	})
-
-	// Add vulnerability resource here
-	mcpServer.AddResource(mcp.NewResource("vulnerabilities", "Recent Vulnerability Reports"),
-		func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			return HandleVulnerabilityResource(ctx, request, service, logger)
-		})
-
-	if opts.AllowTemplateWrites {
-		mcpServer.AddTool(mcp.NewTool("add_template",
-			mcp.WithDescription("Adds a new Nuclei template."),
-			mcp.WithString("name", mcp.Description("The name of the template file."), mcp.Required()),
-			mcp.WithString("content", mcp.Description("The content of the template file."), mcp.Required()),
-		), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return HandleAddTemplate(ctx, request, tm)
-		})
+	pageOpts := []mcp.ToolOption{
+		mcp.WithNumber("limit", mcp.Description(fmt.Sprintf("Findings per page (default %d, max %d)", cfg.PageSize, maxPageSize)), mcp.Min(1), mcp.Max(maxPageSize)),
+		mcp.WithNumber("offset", mcp.Description("Index of the first finding to return (default 0)"), mcp.Min(0)),
 	}
 
-	mcpServer.AddTool(mcp.NewTool("list_templates",
-		mcp.WithDescription("Lists all available Nuclei templates."),
-	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return HandleListTemplates(ctx, request, tm)
-	})
+	scanTool := append([]mcp.ToolOption{
+		mcp.WithDescription("Run a Nuclei vulnerability scan against one target using the installed templates. Only scan systems you are authorized to test. Returns a summary by severity and the first page of findings; use get_scan_results with the scan_id for more."),
+		mcp.WithTitleAnnotation("Nuclei scan"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithString("target", mcp.Required(), mcp.Description("URL (https://example.com), host (example.com), host:port or IP to scan")),
+		mcp.WithString("severity", mcp.Description("Minimum severity: info, low, medium, high or critical (\"high\" runs high and critical). A comma-separated list (\"low,high\") selects exactly those. Default: all.")),
+		mcp.WithString("protocols", mcp.Description("Comma-separated protocol types: http, dns, ssl, tcp, websocket, whois, javascript (\"https\" means http). Default: all.")),
+		mcp.WithString("template_ids", mcp.Description("Comma-separated Nuclei template IDs (e.g. \"tech-detect,dmarc-detect\") or template file paths from list_templates")),
+		mcp.WithString("template_id", mcp.Description("A single template ID; same as template_ids")),
+		mcp.WithString("tags", mcp.Description("Comma-separated template tags to include (e.g. \"cve,exposure\")")),
+		mcp.WithString("exclude_tags", mcp.Description("Comma-separated template tags to skip (e.g. \"dos,fuzz\")")),
+	}, pageOpts...)
+	s.AddTool(mcp.NewTool("nuclei_scan", scanTool...), h.nucleiScan)
 
-	mcpServer.AddTool(mcp.NewTool("get_template",
-		mcp.WithDescription("Gets the content of a specific Nuclei template."),
-		mcp.WithString("name", mcp.Description("The name of the template file."), mcp.Required()),
-	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return HandleGetTemplate(ctx, request, tm)
-	})
+	basicTool := append([]mcp.ToolOption{
+		mcp.WithDescription("Run the single built-in basic template against a target: a quick check that the target answers HTTP. Only scan systems you are authorized to test."),
+		mcp.WithTitleAnnotation("Basic scan"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithString("target", mcp.Required(), mcp.Description("URL, host, host:port or IP to scan")),
+	}, pageOpts...)
+	s.AddTool(mcp.NewTool("basic_scan", basicTool...), h.basicScan)
 
-	return mcpServer
+	resultsTool := append([]mcp.ToolOption{
+		mcp.WithDescription("Read the findings of an earlier scan by scan_id, a page at a time, optionally filtered by minimum severity."),
+		mcp.WithTitleAnnotation("Scan results"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("scan_id", mcp.Required(), mcp.Description("The scan_id returned by nuclei_scan or basic_scan")),
+		mcp.WithString("severity", mcp.Description("Minimum severity to include, or a comma-separated list")),
+	}, pageOpts...)
+	s.AddTool(mcp.NewTool("get_scan_results", resultsTool...), h.getScanResults)
+
+	s.AddTool(mcp.NewTool("list_templates",
+		mcp.WithDescription("List installed Nuclei template files (paths relative to the templates directory)."),
+		mcp.WithTitleAnnotation("List templates"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("filter", mcp.Description("Only list paths containing this text (case-insensitive)")),
+	), h.listTemplates)
+
+	s.AddTool(mcp.NewTool("get_template",
+		mcp.WithDescription("Return the YAML of one installed template."),
+		mcp.WithTitleAnnotation("Get template"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Template path as shown by list_templates, e.g. basic-test.yaml")),
+	), h.getTemplate)
+
+	if cfg.AllowTemplateWrites {
+		s.AddTool(mcp.NewTool("add_template",
+			mcp.WithDescription("Save a new Nuclei template. It runs on every later nuclei_scan that has no template_ids, so only add templates the user has reviewed. Network protocols only (http, dns, tcp, ssl, websocket, whois); existing files are never overwritten."),
+			mcp.WithTitleAnnotation("Add template"),
+			mcp.WithReadOnlyHintAnnotation(false),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithIdempotentHintAnnotation(false),
+			mcp.WithOpenWorldHintAnnotation(false),
+			mcp.WithString("name", mcp.Required(), mcp.Description("New file name, e.g. my-check.yaml")),
+			mcp.WithString("content", mcp.Required(), mcp.Description("The template YAML (max 64 KiB)")),
+		), h.addTemplate)
+	}
+
+	s.AddResource(mcp.NewResource(scansURI, "Recent scans",
+		mcp.WithResourceDescription("Summaries of recent scans, newest first"),
+		mcp.WithMIMEType("application/json")), h.recentScansResource)
+	s.AddResourceTemplate(mcp.NewResourceTemplate(scanURIPrefix+"{scan_id}", "Scan result",
+		mcp.WithTemplateDescription("All findings of one scan"),
+		mcp.WithTemplateMIMEType("application/json")), h.scanResource)
+
+	return s
 }
 
-func HandleNucleiScanTool(
-	ctx context.Context,
-	request mcp.CallToolRequest,
-	service scanner.ScannerServiceInterface,
-	_ *log.Logger,
-) (*mcp.CallToolResult, error) {
-	argMap, ok := request.Params.Arguments.(map[string]any)
-	if !ok || argMap == nil {
-		return nil, fmt.Errorf("invalid arguments format")
-	}
-
-	targetVal, exists := argMap["target"]
-	if !exists || targetVal == nil {
-		return nil, fmt.Errorf("missing target parameter")
-	}
-	target, ok := targetVal.(string)
-	if !ok || target == "" {
-		return nil, fmt.Errorf("invalid target parameter: must be a non-empty string")
-	}
-
-	severity := "info"
-	if severityVal, exists := argMap["severity"]; exists && severityVal != nil {
-		if s, ok := severityVal.(string); ok && s != "" {
-			severity = s
-		}
-	}
-
-	protocols := "http,https"
-	if protocolsVal, exists := argMap["protocols"]; exists && protocolsVal != nil {
-		if p, ok := protocolsVal.(string); ok && p != "" {
-			protocols = p
-		}
-	}
-
-	threadSafe := false
-	if threadSafeVal, exists := argMap["thread_safe"]; exists && threadSafeVal != nil {
-		if ts, ok := threadSafeVal.(bool); ok {
-			threadSafe = ts
-		}
-	}
-
-	var templateIDs []string
-	if idsVal, exists := argMap["template_ids"]; exists && idsVal != nil {
-		if ids, ok := idsVal.(string); ok && ids != "" {
-			templateIDs = strings.Split(ids, ",")
-		}
-	}
-
-	if idVal, exists := argMap["template_id"]; exists && idVal != nil {
-		if id, ok := idVal.(string); ok && id != "" {
-			templateIDs = append(templateIDs, id)
-		}
-	}
-
-	var result cache.ScanResult
-	var err error
-
-	if threadSafe {
-		result, err = service.ThreadSafeScan(ctx, target, severity, protocols, templateIDs)
-	} else {
-		result, err = service.Scan(target, severity, protocols, templateIDs)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("scan failed: %w", err)
-	}
-
-	var responseText string
-	if len(result.Findings) == 0 {
-		responseText = fmt.Sprintf("No vulnerabilities found for target: %s", target)
-	} else {
-		responseText = fmt.Sprintf("Found %d vulnerabilities for target: %s\n\n", len(result.Findings), target)
-
-		for i, finding := range result.Findings {
-			responseText += fmt.Sprintf("Finding #%d:\n", i+1)
-			responseText += fmt.Sprintf("- Name: %s\n", finding.Info.Name)
-			responseText += fmt.Sprintf("- Severity: %s\n", finding.Info.SeverityHolder.Severity.String())
-			responseText += fmt.Sprintf("- Description: %s\n", finding.Info.Description)
-			responseText += fmt.Sprintf("- URL: %s\n\n", finding.Host)
-		}
-	}
-
-	return mcp.NewToolResultText(responseText), nil
+type handlers struct {
+	sc  Scanner
+	tm  Templates
+	cfg Config
 }
 
-func HandleBasicScanTool(
-	_ context.Context,
-	request mcp.CallToolRequest,
-	service scanner.ScannerServiceInterface,
-	logger *log.Logger,
-) (*mcp.CallToolResult, error) {
-	argMap, ok := request.Params.Arguments.(map[string]any)
-	if !ok || argMap == nil {
-		return nil, fmt.Errorf("invalid arguments format")
+// toolError reports any failure as a tool result with isError set, so the
+// model sees the message and can correct its call. Unexpected failures are
+// also logged.
+func (h *handlers) toolError(tool string, err error) (*mcp.CallToolResult, error) {
+	var ie *scanner.InputError
+	if !errors.As(err, &ie) {
+		h.cfg.Logger.Error("tool failed", "tool", tool, "error", err)
 	}
-
-	targetVal, exists := argMap["target"]
-	if !exists || targetVal == nil {
-		return nil, fmt.Errorf("missing target parameter")
-	}
-	target, ok := targetVal.(string)
-	if !ok || target == "" {
-		return nil, fmt.Errorf("invalid target parameter: must be a non-empty string")
-	}
-
-	result, err := service.BasicScan(target)
-	if err != nil {
-		logger.Printf("Basic scan failed: %v", err)
-		return nil, err
-	}
-
-	type SimplifiedFinding struct {
-		Name        string `json:"name"`
-		Severity    string `json:"severity"`
-		Description string `json:"description"`
-		URL         string `json:"url"`
-	}
-
-	simplifiedFindings := make([]SimplifiedFinding, 0, len(result.Findings))
-	for _, finding := range result.Findings {
-		if finding == nil {
-			continue
-		}
-
-		severity := "unknown"
-		if finding.Info.SeverityHolder.Severity.String() != "" {
-			severity = finding.Info.SeverityHolder.Severity.String()
-		}
-
-		simplifiedFindings = append(simplifiedFindings, SimplifiedFinding{
-			Name:        finding.Info.Name,
-			Severity:    severity,
-			Description: finding.Info.Description,
-			URL:         finding.Host,
-		})
-	}
-
-	response := map[string]interface{}{
-		"target":         result.Target,
-		"scan_time":      result.ScanTime.Format(time.RFC3339),
-		"findings_count": len(result.Findings),
-		"findings":       simplifiedFindings,
-	}
-
-	responseJSON, err := json.Marshal(response)
-	if err != nil {
-		logger.Printf("Failed to marshal response: %v", err)
-		return nil, err
-	}
-
-	return mcp.NewToolResultText(string(responseJSON)), nil
+	return mcp.NewToolResultError(err.Error()), nil
 }
 
-func HandleVulnerabilityResource(
-	_ context.Context,
-	_ mcp.ReadResourceRequest,
-	service scanner.ScannerServiceInterface,
-	_ *log.Logger,
-) ([]mcp.ResourceContents, error) {
-	results := service.GetAll()
+func jsonResult(v any) (*mcp.CallToolResult, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return mcp.NewToolResultError("encoding result: " + err.Error()), nil
+	}
+	return mcp.NewToolResultText(string(b)), nil
+}
 
-	var recentScans []map[string]interface{}
-	for _, result := range results {
-		scanInfo := map[string]interface{}{
-			"target":    result.Target,
-			"scan_time": result.ScanTime.Format(time.RFC3339),
-			"findings":  len(result.Findings),
+func (h *handlers) nucleiScan(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	target, err := req.RequireString("target")
+	if err != nil {
+		return h.toolError("nuclei_scan", err)
+	}
+	limit, offset, err := h.paging(req)
+	if err != nil {
+		return h.toolError("nuclei_scan", err)
+	}
+	ids := []string{req.GetString("template_ids", "")}
+	if one := req.GetString("template_id", ""); one != "" {
+		ids = append(ids, one)
+	}
+	out, err := h.sc.Scan(ctx, scanner.Request{
+		Target:      target,
+		Severity:    req.GetString("severity", ""),
+		Protocols:   req.GetString("protocols", ""),
+		TemplateIDs: ids,
+		Tags:        []string{req.GetString("tags", "")},
+		ExcludeTags: []string{req.GetString("exclude_tags", "")},
+	})
+	if err != nil {
+		return h.toolError("nuclei_scan", err)
+	}
+	return jsonResult(buildPage(out.Result, out.Cached, nil, limit, offset))
+}
+
+func (h *handlers) basicScan(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	target, err := req.RequireString("target")
+	if err != nil {
+		return h.toolError("basic_scan", err)
+	}
+	limit, offset, err := h.paging(req)
+	if err != nil {
+		return h.toolError("basic_scan", err)
+	}
+	out, err := h.sc.BasicScan(ctx, target)
+	if err != nil {
+		return h.toolError("basic_scan", err)
+	}
+	return jsonResult(buildPage(out.Result, out.Cached, nil, limit, offset))
+}
+
+func (h *handlers) getScanResults(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := req.RequireString("scan_id")
+	if err != nil {
+		return h.toolError("get_scan_results", err)
+	}
+	limit, offset, err := h.paging(req)
+	if err != nil {
+		return h.toolError("get_scan_results", err)
+	}
+	var allowed map[string]bool
+	if sev := req.GetString("severity", ""); sev != "" {
+		list, err := scanner.NormalizeSeverity(sev)
+		if err != nil {
+			return h.toolError("get_scan_results", err)
 		}
+		allowed = map[string]bool{}
+		for _, s := range strings.Split(list, ",") {
+			allowed[s] = true
+		}
+	}
+	r, ok := h.sc.Get(strings.TrimSpace(id))
+	if !ok {
+		return h.toolError("get_scan_results", &scanner.InputError{Msg: fmt.Sprintf("no stored scan with id %q; it may have been evicted (cache.max_size). Read %s for recent scans", id, scansURI)})
+	}
+	return jsonResult(buildPage(r, true, allowed, limit, offset))
+}
 
-		if len(result.Findings) > 0 {
-			var sampleFindings []map[string]string
+func (h *handlers) paging(req mcp.CallToolRequest) (limit, offset int, err error) {
+	limit = req.GetInt("limit", h.cfg.PageSize)
+	offset = req.GetInt("offset", 0)
+	if limit < 1 || limit > maxPageSize {
+		return 0, 0, &scanner.InputError{Msg: fmt.Sprintf("limit must be between 1 and %d", maxPageSize)}
+	}
+	if offset < 0 {
+		return 0, 0, &scanner.InputError{Msg: "offset must not be negative"}
+	}
+	return limit, offset, nil
+}
 
-			count := min(5, len(result.Findings))
-			for i := 0; i < count; i++ {
-				finding := result.Findings[i]
-				if finding == nil {
-					continue
-				}
+// Page is the JSON shape of a scan result page.
+type Page struct {
+	ScanID        string          `json:"scan_id"`
+	Kind          string          `json:"kind"`
+	Target        string          `json:"target"`
+	ScanTime      string          `json:"scan_time"`
+	DurationMS    int64           `json:"duration_ms"`
+	Cached        bool            `json:"cached"`
+	Partial       bool            `json:"partial"`
+	PartialReason string          `json:"partial_reason,omitempty"`
+	TotalFindings int             `json:"total_findings"`
+	BySeverity    map[string]int  `json:"by_severity"`
+	Offset        int             `json:"offset"`
+	Returned      int             `json:"returned"`
+	NextOffset    *int            `json:"next_offset"`
+	Findings      []cache.Finding `json:"findings"`
+	Note          string          `json:"note,omitempty"`
+}
 
-				severity := "unknown"
-				if finding.Info.SeverityHolder.Severity.String() != "" {
-					severity = finding.Info.SeverityHolder.Severity.String()
-				}
-
-				sampleFindings = append(sampleFindings, map[string]string{
-					"name":        finding.Info.Name,
-					"severity":    severity,
-					"description": finding.Info.Description,
-					"url":         finding.Host,
-				})
+func buildPage(r cache.ScanResult, cached bool, allowed map[string]bool, limit, offset int) Page {
+	findings := r.Findings
+	if allowed != nil {
+		filtered := make([]cache.Finding, 0, len(findings))
+		for _, f := range findings {
+			if allowed[f.Severity] {
+				filtered = append(filtered, f)
 			}
-			scanInfo["sample_findings"] = sampleFindings
 		}
-
-		recentScans = append(recentScans, scanInfo)
+		findings = filtered
 	}
-
-	report := map[string]interface{}{
-		"timestamp":    time.Now().Format(time.RFC3339),
-		"recent_scans": recentScans,
-		"total_scans":  len(recentScans),
+	by := map[string]int{}
+	for _, f := range findings {
+		by[f.Severity]++
 	}
+	p := Page{
+		ScanID: r.ID, Kind: r.Kind, Target: r.Target, ScanTime: r.ScanTime.UTC().Format(time.RFC3339),
+		DurationMS: r.Duration.Milliseconds(), Cached: cached, Partial: r.Partial, PartialReason: r.PartialReason,
+		TotalFindings: len(findings), BySeverity: by, Offset: offset, Findings: []cache.Finding{},
+	}
+	if offset < len(findings) {
+		end := min(offset+limit, len(findings))
+		p.Findings = findings[offset:end]
+		if end < len(findings) {
+			next := end
+			p.NextOffset = &next
+			p.Note = fmt.Sprintf("%d more findings: call get_scan_results with scan_id %q and offset %d", len(findings)-end, r.ID, end)
+		}
+	}
+	p.Returned = len(p.Findings)
+	if p.TotalFindings == 0 && !p.Partial {
+		p.Note = "no findings: the selected templates did not match this target"
+	}
+	return p
+}
 
-	reportJSON, err := json.Marshal(report)
+func (h *handlers) listTemplates(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	all, err := h.tm.ListTemplates()
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal report: %w", err)
+		return h.toolError("list_templates", err)
 	}
-
-	return []mcp.ResourceContents{
-			mcp.TextResourceContents{
-				URI:      "vulnerabilities",
-				MIMEType: "application/json",
-				Text:     string(reportJSON),
-			},
-		},
-		nil
+	filter := strings.ToLower(strings.TrimSpace(req.GetString("filter", "")))
+	matched := make([]string, 0, len(all))
+	for _, t := range all {
+		if filter == "" || strings.Contains(strings.ToLower(t), filter) {
+			matched = append(matched, t)
+		}
+	}
+	res := map[string]any{"total": len(matched), "templates": matched}
+	if len(matched) > maxListTemplates {
+		res["templates"] = matched[:maxListTemplates]
+		res["note"] = fmt.Sprintf("showing the first %d; pass a filter to narrow the list", maxListTemplates)
+	}
+	return jsonResult(res)
 }
 
-func min(x, y int) int {
-	if x < y {
-		return x
-	}
-	return y
-}
-
-func HandleAddTemplate(_ context.Context, request mcp.CallToolRequest, tm templates.TemplateManager) (*mcp.CallToolResult, error) {
-	argMap, ok := request.Params.Arguments.(map[string]any)
-	if !ok || argMap == nil {
-		return nil, fmt.Errorf("invalid arguments format")
-	}
-
-	nameVal, exists := argMap["name"]
-	if !exists || nameVal == nil {
-		return nil, fmt.Errorf("missing name parameter")
-	}
-	name, ok := nameVal.(string)
-	if !ok || name == "" {
-		return nil, fmt.Errorf("invalid name parameter: must be a non-empty string")
-	}
-
-	contentVal, exists := argMap["content"]
-	if !exists || contentVal == nil {
-		return nil, fmt.Errorf("missing content parameter")
-	}
-	content, ok := contentVal.(string)
-	if !ok || content == "" {
-		return nil, fmt.Errorf("invalid content parameter: must be a non-empty string")
-	}
-
-	if err := tm.AddTemplate(name, []byte(content)); err != nil {
-		return nil, fmt.Errorf("failed to add template: %w", err)
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Template '%s' added successfully.", name)), nil
-}
-
-func HandleListTemplates(_ context.Context, _ mcp.CallToolRequest, tm templates.TemplateManager) (*mcp.CallToolResult, error) {
-	templateFiles, err := tm.ListTemplates()
+func (h *handlers) getTemplate(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	name, err := req.RequireString("name")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list templates: %w", err)
+		return h.toolError("get_template", err)
 	}
-
-	if len(templateFiles) == 0 {
-		return mcp.NewToolResultText("No custom templates found."), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Available templates:\n- %s", strings.Join(templateFiles, "\n- "))), nil
-}
-
-func HandleGetTemplate(_ context.Context, request mcp.CallToolRequest, tm templates.TemplateManager) (*mcp.CallToolResult, error) {
-	argMap, ok := request.Params.Arguments.(map[string]any)
-	if !ok || argMap == nil {
-		return nil, fmt.Errorf("invalid arguments format")
-	}
-
-	nameVal, exists := argMap["name"]
-	if !exists || nameVal == nil {
-		return nil, fmt.Errorf("missing name parameter")
-	}
-	name, ok := nameVal.(string)
-	if !ok || name == "" {
-		return nil, fmt.Errorf("invalid name parameter: must be a non-empty string")
-	}
-
-	content, err := tm.GetTemplate(name)
+	content, err := h.tm.GetTemplate(name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get template: %w", err)
+		return h.toolError("get_template", &scanner.InputError{Msg: err.Error()})
 	}
-
 	return mcp.NewToolResultText(string(content)), nil
+}
+
+func (h *handlers) addTemplate(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	name, err := req.RequireString("name")
+	if err != nil {
+		return h.toolError("add_template", err)
+	}
+	content, err := req.RequireString("content")
+	if err != nil {
+		return h.toolError("add_template", err)
+	}
+	if err := h.tm.AddTemplate(name, []byte(content)); err != nil {
+		return h.toolError("add_template", &scanner.InputError{Msg: err.Error()})
+	}
+	h.cfg.Logger.Warn("template added by client", "name", name)
+	return mcp.NewToolResultText(fmt.Sprintf("Template %q added. It will run on later scans that do not set template_ids.", name)), nil
+}
+
+// ScanSummary is one entry of the recent-scans resource.
+type ScanSummary struct {
+	ScanID        string         `json:"scan_id"`
+	URI           string         `json:"uri"`
+	Kind          string         `json:"kind"`
+	Target        string         `json:"target"`
+	ScanTime      string         `json:"scan_time"`
+	Partial       bool           `json:"partial"`
+	TotalFindings int            `json:"total_findings"`
+	BySeverity    map[string]int `json:"by_severity"`
+}
+
+func (h *handlers) recentScansResource(_ context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	recent := h.sc.Recent()
+	out := make([]ScanSummary, 0, len(recent))
+	for _, r := range recent {
+		by := map[string]int{}
+		for _, f := range r.Findings {
+			by[f.Severity]++
+		}
+		out = append(out, ScanSummary{
+			ScanID: r.ID, URI: scanURIPrefix + r.ID, Kind: r.Kind, Target: r.Target,
+			ScanTime: r.ScanTime.UTC().Format(time.RFC3339), Partial: r.Partial,
+			TotalFindings: len(r.Findings), BySeverity: by,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ScanTime > out[j].ScanTime })
+	b, err := json.Marshal(map[string]any{"scans": out})
+	if err != nil {
+		return nil, err
+	}
+	return []mcp.ResourceContents{mcp.TextResourceContents{URI: scansURI, MIMEType: "application/json", Text: string(b)}}, nil
+}
+
+func (h *handlers) scanResource(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	uri := req.Params.URI
+	id := strings.TrimPrefix(uri, scanURIPrefix)
+	if id == uri || id == "" || strings.Contains(id, "/") {
+		return nil, fmt.Errorf("invalid scan URI %q", uri)
+	}
+	r, ok := h.sc.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("scan %q not found", id)
+	}
+	b, err := json.Marshal(buildPage(r, true, nil, max(len(r.Findings), 1), 0))
+	if err != nil {
+		return nil, err
+	}
+	return []mcp.ResourceContents{mcp.TextResourceContents{URI: uri, MIMEType: "application/json", Text: string(b)}}, nil
 }

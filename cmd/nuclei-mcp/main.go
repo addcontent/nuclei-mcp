@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -70,12 +69,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		logger.Info("installed built-in templates", "count", n)
 	}
 
-	var resultCache cache.ResultCacheInterface = cache.NewNoopCache()
-	if cfg.Cache.Enabled {
-		resultCache = cache.NewResultCache(cfg.Cache.Expiry, slog.NewLogLogger(logger.Handler(), slog.LevelDebug))
-	}
-	scannerService := scanner.NewScannerService(resultCache, logger, cfg.Nuclei.TemplatesDirectory, cfg.Nuclei.BasicTemplateName)
-
 	templateManager, err := templates.NewTemplateManager(cfg.Nuclei.TemplatesDirectory)
 	if err != nil {
 		logger.Error("cannot open templates directory", "error", err)
@@ -90,13 +83,35 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	logger.Info("security settings",
 		"add_template", cfg.Security.AllowTemplateWrites,
+		"interactsh", cfg.Security.Interactsh,
 		"private_targets", cfg.Security.AllowPrivateTargets,
 		"allowed_targets", len(cfg.Security.AllowedTargets),
 		"denied_targets", len(cfg.Security.DeniedTargets))
 
-	mcpServer := api.NewNucleiMCPServer(scannerService, log.New(stderr, "[MCP] ", log.LstdFlags), templateManager, api.Options{
+	store := cache.New(cfg.Cache.Enabled, cfg.Cache.Expiry, cfg.Cache.MaxSize)
+	scanService := scanner.New(scanner.Options{
+		TemplatesDir:         cfg.Nuclei.TemplatesDirectory,
+		BasicTemplate:        cfg.Nuclei.BasicTemplateName,
+		ScanTimeout:          cfg.Nuclei.ScanTimeout,
+		RequestTimeout:       cfg.Nuclei.Timeout,
+		Retries:              cfg.Nuclei.Retries,
+		RateLimit:            cfg.Nuclei.RateLimit,
+		HostConcurrency:      cfg.Nuclei.BulkSize,
+		TemplateConcurrency:  cfg.Nuclei.TemplateThreads,
+		SystemResolvers:      cfg.Nuclei.SystemResolvers,
+		Interactsh:           cfg.Security.Interactsh,
+		RestrictLocalNetwork: !scopeChecker.AllowsLocalNetwork(),
+		Scope:                scopeChecker,
+		Fingerprint:          templateManager.Fingerprint,
+		Logger:               logger,
+	}, store)
+
+	mcpServer := api.NewServer(scanService, templateManager, api.Config{
+		Name:                "nuclei-mcp",
+		Version:             version,
 		AllowTemplateWrites: cfg.Security.AllowTemplateWrites,
-		Scope:               scopeChecker,
+		PageSize:            cfg.Output.MaxFindings,
+		Logger:              logger,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

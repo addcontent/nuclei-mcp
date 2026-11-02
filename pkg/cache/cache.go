@@ -1,122 +1,162 @@
+// Package cache keeps recent scan results in memory.
+//
+// Every completed scan is stored under a random ID so it can be paged
+// through or read back as a resource. When reuse is enabled, an identical
+// scan within the expiry window returns the stored result instead of
+// scanning again. The store holds at most maxSize results; the oldest go
+// first.
 package cache
 
 import (
-	"log"
+	"crypto/rand"
+	"encoding/hex"
+	"sort"
 	"sync"
 	"time"
-
-	"github.com/projectdiscovery/nuclei/v3/pkg/output"
 )
 
-// ScanResult represents the result of a nuclei scan
+// Finding is one Nuclei result, trimmed to what a client needs. Raw
+// requests and responses are deliberately not kept.
+type Finding struct {
+	TemplateID       string    `json:"template_id"`
+	Name             string    `json:"name"`
+	Severity         string    `json:"severity"`
+	Type             string    `json:"type,omitempty"`
+	Host             string    `json:"host,omitempty"`
+	MatchedAt        string    `json:"matched_at,omitempty"`
+	MatcherName      string    `json:"matcher_name,omitempty"`
+	ExtractorName    string    `json:"extractor_name,omitempty"`
+	ExtractedResults []string  `json:"extracted_results,omitempty"`
+	Description      string    `json:"description,omitempty"`
+	Remediation      string    `json:"remediation,omitempty"`
+	Tags             []string  `json:"tags,omitempty"`
+	References       []string  `json:"references,omitempty"`
+	CVE              []string  `json:"cve,omitempty"`
+	CWE              []string  `json:"cwe,omitempty"`
+	CVSSScore        float64   `json:"cvss_score,omitempty"`
+	CVSSMetrics      string    `json:"cvss_metrics,omitempty"`
+	Timestamp        time.Time `json:"timestamp"`
+}
+
+// ScanResult is one completed (or timed-out) scan.
 type ScanResult struct {
-	Target   string                `json:"target"`
-	ScanTime time.Time             `json:"scan_time"`
-	Findings []*output.ResultEvent `json:"findings"`
+	ID       string        `json:"scan_id"`
+	Kind     string        `json:"kind"`
+	Target   string        `json:"target"`
+	ScanTime time.Time     `json:"scan_time"`
+	Duration time.Duration `json:"-"`
+	// Partial is set when the scan stopped early (timeout or cancellation).
+	Partial       bool      `json:"partial"`
+	PartialReason string    `json:"partial_reason,omitempty"`
+	Findings      []Finding `json:"findings"`
 }
 
-// ResultCacheInterface is an interface that defines the cache operations
-type ResultCacheInterface interface {
-	Get(key string) (ScanResult, bool)
-	Set(key string, result ScanResult)
-	GetAll() []ScanResult
+// Store is a bounded, concurrency-safe result store.
+type Store struct {
+	mu      sync.Mutex
+	reuse   bool
+	expiry  time.Duration
+	maxSize int
+	now     func() time.Time
+
+	byID  map[string]ScanResult
+	byKey map[string]string // reuse key -> scan ID
+	keyOf map[string]string // scan ID -> reuse key
+	order []string          // scan IDs, oldest first
 }
 
-// ResultCache caches scan results
-type ResultCache struct {
-	cache  map[string]ScanResult
-	expiry time.Duration
-	lock   sync.RWMutex
-	logger *log.Logger
-}
-
-// NoopCache is a cache that does nothing.
-type NoopCache struct{}
-
-// Ensure ResultCache implements ResultCacheInterface
-var _ ResultCacheInterface = (*ResultCache)(nil)
-
-// Ensure NoopCache implements ResultCacheInterface
-var _ ResultCacheInterface = (*NoopCache)(nil)
-
-// NewResultCache creates a new result cache
-func NewResultCache(expiry time.Duration, logger *log.Logger) *ResultCache {
-	return &ResultCache{
-		cache:  make(map[string]ScanResult),
-		expiry: expiry,
-		logger: logger,
+// New returns a store. With reuse disabled, Lookup always misses but results
+// are still kept for paging and resources.
+func New(reuse bool, expiry time.Duration, maxSize int) *Store {
+	if maxSize < 1 {
+		maxSize = 1
+	}
+	return &Store{
+		reuse: reuse, expiry: expiry, maxSize: maxSize, now: time.Now,
+		byID: map[string]ScanResult{}, byKey: map[string]string{}, keyOf: map[string]string{},
 	}
 }
 
-// Get retrieves a result from the cache
-func (c *ResultCache) Get(key string) (ScanResult, bool) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	result, found := c.cache[key]
-	if !found {
+// Lookup returns a reusable result for key if reuse is on and it has not expired.
+func (s *Store) Lookup(key string) (ScanResult, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.reuse {
 		return ScanResult{}, false
 	}
-
-	// Check if result has expired
-	if time.Since(result.ScanTime) > c.expiry {
-		c.logger.Printf("Cache entry expired and removed: %s", key)
-		delete(c.cache, key)
+	id, ok := s.byKey[key]
+	if !ok {
 		return ScanResult{}, false
 	}
-
-	c.logger.Printf("Cache hit: %s", key)
-	return result, true
+	r := s.byID[id]
+	if s.now().Sub(r.ScanTime) > s.expiry {
+		delete(s.byKey, key)
+		delete(s.keyOf, id)
+		return ScanResult{}, false
+	}
+	return r, true
 }
 
-// Set stores a result in the cache
-func (c *ResultCache) Set(key string, result ScanResult) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	c.cache[key] = result
-	c.logger.Printf("Cache entry set: %s", key)
-}
-
-// GetAll returns a copy of all non-expired items in the cache.
-func (c *ResultCache) GetAll() []ScanResult {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	results := make([]ScanResult, 0, len(c.cache))
-	expiredKeys := make([]string, 0)
-
-	for key, result := range c.cache {
-		if time.Since(result.ScanTime) > c.expiry {
-			expiredKeys = append(expiredKeys, key)
-			continue
+// Put stores r, assigning an ID if it has none, and returns the stored copy.
+// Partial results are kept for paging but never reused.
+func (s *Store) Put(key string, r ScanResult) ScanResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r.ID == "" {
+		r.ID = newID()
+	}
+	if _, exists := s.byID[r.ID]; !exists {
+		s.order = append(s.order, r.ID)
+	}
+	s.byID[r.ID] = r
+	if key != "" && !r.Partial {
+		if old, ok := s.byKey[key]; ok {
+			delete(s.keyOf, old)
 		}
-		results = append(results, result)
+		s.byKey[key] = r.ID
+		s.keyOf[r.ID] = key
 	}
-
-	// Clean up expired entries
-	for _, key := range expiredKeys {
-		c.logger.Printf("Removing expired cache entry: %s", key)
-		delete(c.cache, key)
+	for len(s.order) > s.maxSize {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		delete(s.byID, oldest)
+		if k, ok := s.keyOf[oldest]; ok {
+			delete(s.byKey, k)
+			delete(s.keyOf, oldest)
+		}
 	}
-
-	return results
+	return r
 }
 
-// NewNoopCache creates a new no-op cache.
-func NewNoopCache() *NoopCache {
-	return &NoopCache{}
+// Get returns a stored result by scan ID.
+func (s *Store) Get(id string) (ScanResult, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byID[id]
+	return r, ok
 }
 
-// Get always returns nothing for the no-op cache.
-func (c *NoopCache) Get(key string) (ScanResult, bool) {
-	return ScanResult{}, false
+// Recent returns stored results, newest first.
+func (s *Store) Recent() []ScanResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ScanResult, 0, len(s.byID))
+	for _, r := range s.byID {
+		out = append(out, r)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ScanTime.After(out[j].ScanTime) })
+	return out
 }
 
-// Set does nothing for the no-op cache.
-func (c *NoopCache) Set(key string, result ScanResult) {}
+// Len returns the number of stored results.
+func (s *Store) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.byID)
+}
 
-// GetAll returns an empty slice for the no-op cache.
-func (c *NoopCache) GetAll() []ScanResult {
-	return nil
+func newID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
