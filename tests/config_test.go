@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"nuclei-mcp/pkg/config"
+	"github.com/addcontent/nuclei-mcp/pkg/config"
 
 	"github.com/stretchr/testify/assert"
 )

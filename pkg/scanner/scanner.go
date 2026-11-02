@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"nuclei-mcp/pkg/cache"
-	"nuclei-mcp/pkg/logging"
+	"github.com/addcontent/nuclei-mcp/pkg/cache"
+	"github.com/addcontent/nuclei-mcp/pkg/logging"
 
 	lib "github.com/projectdiscovery/nuclei/v3/lib"
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"

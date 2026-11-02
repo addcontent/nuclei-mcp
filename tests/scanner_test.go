@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"nuclei-mcp/pkg/cache"
-	"nuclei-mcp/pkg/logging"
-	"nuclei-mcp/pkg/scanner"
+	"github.com/addcontent/nuclei-mcp/pkg/cache"
+	"github.com/addcontent/nuclei-mcp/pkg/logging"
+	"github.com/addcontent/nuclei-mcp/pkg/scanner"
 
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"
 	"github.com/stretchr/testify/assert"

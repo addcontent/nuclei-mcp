@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"nuclei-mcp/pkg/templates"
+	"github.com/addcontent/nuclei-mcp/pkg/templates"
 )
 
 func TestNewTemplateManager(t *testing.T) {

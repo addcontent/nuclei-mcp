@@ -1,4 +1,4 @@
-module nuclei-mcp
+module github.com/addcontent/nuclei-mcp
 
 go 1.24.1
 

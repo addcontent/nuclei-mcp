@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"nuclei-mcp/pkg/api"
-	"nuclei-mcp/pkg/cache"
-	"nuclei-mcp/pkg/config"
-	"nuclei-mcp/pkg/logging"
-	"nuclei-mcp/pkg/scanner"
-	"nuclei-mcp/pkg/templates"
+	"github.com/addcontent/nuclei-mcp/pkg/api"
+	"github.com/addcontent/nuclei-mcp/pkg/cache"
+	"github.com/addcontent/nuclei-mcp/pkg/config"
+	"github.com/addcontent/nuclei-mcp/pkg/logging"
+	"github.com/addcontent/nuclei-mcp/pkg/scanner"
+	"github.com/addcontent/nuclei-mcp/pkg/templates"
 
 	mcp "github.com/mark3labs/mcp-go/server"
 	"github.com/sirupsen/logrus"

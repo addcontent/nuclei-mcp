@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"nuclei-mcp/pkg/logging"
+	"github.com/addcontent/nuclei-mcp/pkg/logging"
 
 	"github.com/stretchr/testify/assert"
 )

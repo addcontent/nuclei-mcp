@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"nuclei-mcp/pkg/api"
-	"nuclei-mcp/pkg/cache"
+	"github.com/addcontent/nuclei-mcp/pkg/api"
+	"github.com/addcontent/nuclei-mcp/pkg/cache"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"

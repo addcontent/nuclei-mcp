@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"nuclei-mcp/pkg/cache"
-	"nuclei-mcp/pkg/scanner"
-	"nuclei-mcp/pkg/templates"
+	"github.com/addcontent/nuclei-mcp/pkg/cache"
+	"github.com/addcontent/nuclei-mcp/pkg/scanner"
+	"github.com/addcontent/nuclei-mcp/pkg/templates"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
