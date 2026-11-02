@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test -race ./...
+      - name: build
+        run: go build ./cmd/nuclei-mcp
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: govulncheck (reachable code only)
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... > vuln.json || true
+          # Known and accepted, re-check on every Nuclei upgrade:
+          #   GO-2026-5932  golang.org/x/crypto/openpgp is unmaintained; no fix
+          #                 exists and it is pulled in by the Nuclei SDK.
+          ids=$(jq -r 'select(.finding != null and .finding.trace[0].function != null) | .finding.osv' vuln.json \
+                | sort -u | grep -vx 'GO-2026-5932' || true)
+          if [ -n "$ids" ]; then
+            echo "Reachable vulnerabilities:"; echo "$ids"; exit 1
+          fi
+          echo "No reachable vulnerabilities (allow-list: GO-2026-5932)"

@@ -1,4 +1,7 @@
-
+> **Early design notes, kept for history.** This essay predates the implementation and does not
+> describe how nuclei-mcp works today; see the README for that. Its code samples use Nuclei APIs
+> that do not exist, its figures (benchmarks, "60-75%") and footnote markers have no sources, and
+> the MCP specification does not prescribe AES-GCM payload encryption.
 
 # Integrating ProjectDiscovery Nuclei with Large Language Models via Model Context Protocol (MCP)
 
@@ -226,6 +229,3 @@ Closed-loop remediation system:
 Implementation framework:
 
 ![alt text](image.png)
-```
-
-
