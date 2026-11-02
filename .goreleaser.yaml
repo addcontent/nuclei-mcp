@@ -46,9 +46,7 @@ archives:
       - README.md
       - LICENSE*
       - CONTRIBUTING.md
-      - config.yaml
-      - nuclei-templates/*
-      - templates/*
+      - config.example.yaml
 
 checksum:
   name_template: 'checksums.txt'

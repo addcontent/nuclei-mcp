@@ -1,11 +1,11 @@
-id: basic-test
+id: http-test
 info:
-  name: Basic Test Template
+  name: HTTP Test Template
   author: MCP
   severity: info
-  description: Basic test template for nuclei
+  description: Basic HTTP test template for nuclei
 
-requests:
+http:
   - method: GET
     path:
       - "{{BaseURL}}"

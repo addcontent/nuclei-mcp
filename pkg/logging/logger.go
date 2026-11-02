@@ -1,82 +1,69 @@
+// Package logging builds the server's structured logger.
+//
+// Logs go to stderr and, optionally, to a file. Nothing is ever written to
+// stdout, which carries the MCP protocol.
 package logging
 
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
-	"sync"
+	"strings"
 )
 
-type Logger interface {
-	Log(format string, v ...interface{})
-	GetWriter() io.Writer
-	Close() error
-}
-
-type ConsoleLogger struct {
-	file   *os.File
-	logger *log.Logger
-	mu     sync.Mutex
-}
-
-func NewConsoleLogger(logPath string) (*ConsoleLogger, error) {
-	logDir := filepath.Dir(logPath)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create log directory: %v", err)
+// ParseLevel converts debug, info, warn/warning or error to a slog level.
+func ParseLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
 	}
+	return slog.LevelInfo, fmt.Errorf("unknown log level %q", s)
+}
 
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+// New returns a logger writing to stderr and, when path is set, to that file.
+// If the file cannot be opened the logger still works on stderr and the
+// returned warning explains why; a log file problem never stops the server.
+func New(path, level string) (logger *slog.Logger, closeFn func() error, warning error) {
+	lvl, err := ParseLevel(level)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open log file: %v", err)
+		warning = err
 	}
+	closeFn = func() error { return nil }
 
-	multiWriter := io.MultiWriter(file, os.Stderr)
-
-	logger := log.New(multiWriter, "", log.LstdFlags)
-
-	cl := &ConsoleLogger{
-		file:   file,
-		logger: logger,
-		mu:     sync.Mutex{},
+	var w io.Writer = os.Stderr
+	if path != "" {
+		f, ferr := openLogFile(path)
+		if ferr != nil {
+			warning = fmt.Errorf("logging to stderr only: %w", ferr)
+		} else {
+			w = io.MultiWriter(os.Stderr, f)
+			closeFn = f.Close
+		}
 	}
-
-	// Set finalizer to ensure file is closed if Close() is not called
-	runtime.SetFinalizer(cl, (*ConsoleLogger).finalize)
-
-	return cl, nil
+	logger = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lvl}))
+	return logger, closeFn, warning
 }
 
-func (cl *ConsoleLogger) Log(format string, v ...interface{}) {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-	cl.logger.Printf(format, v...)
-}
-
-func (cl *ConsoleLogger) GetWriter() io.Writer {
-	return cl.logger.Writer()
-}
-
-func (cl *ConsoleLogger) Close() error {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-
-	// Clear finalizer since we're explicitly closing
-	runtime.SetFinalizer(cl, nil)
-
-	if cl.file != nil {
-		err := cl.file.Close()
-		cl.file = nil
-		return err
+func openLogFile(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating log directory: %w", err)
 	}
-	return nil
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("opening log file: %w", err)
+	}
+	return f, nil
 }
 
-// finalize is called by the garbage collector if Close() wasn't called
-func (cl *ConsoleLogger) finalize() {
-	if cl.file != nil {
-		cl.file.Close()
-	}
+// Discard returns a logger that drops everything; useful in tests.
+func Discard() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

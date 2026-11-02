@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/addcontent/nuclei-mcp/pkg/cache"
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"
 	"github.com/stretchr/testify/assert"
-	"github.com/addcontent/nuclei-mcp/pkg/cache"
 )
 
 func TestNewResultCache(t *testing.T) {
