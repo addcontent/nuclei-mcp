@@ -5,9 +5,9 @@ go 1.26
 require (
 	github.com/mark3labs/mcp-go v0.32.0
 	github.com/projectdiscovery/nuclei/v3 v3.11.1
-	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.11.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -318,6 +318,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
 	github.com/shurcooL/graphql v0.0.0-20230722043721-ed46e5a46466 // indirect
 	github.com/sijms/go-ora/v2 v2.9.0 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/sorairolake/lzip-go v0.3.8 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
@@ -405,7 +406,6 @@ require (
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6 // indirect
 	gopkg.in/corvus-ch/zbase32.v1 v1.0.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	mellium.im/sasl v0.3.2 // indirect
 	moul.io/http2curl v1.0.0 // indirect
 	software.sslmate.com/src/go-pkcs12 v0.7.2 // indirect

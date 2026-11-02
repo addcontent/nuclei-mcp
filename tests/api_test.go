@@ -93,7 +93,7 @@ func TestNewNucleiMCPServer(t *testing.T) {
 	mockTemplateManager := &MockTemplateManager{}
 	logger := log.New(os.Stdout, "test: ", log.LstdFlags)
 
-	mcpServer := api.NewNucleiMCPServer(mockScanner, logger, mockTemplateManager)
+	mcpServer := api.NewNucleiMCPServer(mockScanner, logger, mockTemplateManager, api.Options{})
 	assert.NotNil(t, mcpServer)
 }
 

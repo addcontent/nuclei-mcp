@@ -19,6 +19,7 @@ import (
 	"github.com/addcontent/nuclei-mcp/pkg/config"
 	"github.com/addcontent/nuclei-mcp/pkg/logging"
 	"github.com/addcontent/nuclei-mcp/pkg/scanner"
+	"github.com/addcontent/nuclei-mcp/pkg/scope"
 	"github.com/addcontent/nuclei-mcp/pkg/templates"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -80,8 +81,23 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		logger.Error("cannot open templates directory", "error", err)
 		return 1
 	}
+	defer templateManager.Close()
 
-	mcpServer := api.NewNucleiMCPServer(scannerService, log.New(stderr, "[MCP] ", log.LstdFlags), templateManager)
+	scopeChecker, err := scope.New(cfg.Security.AllowPrivateTargets, cfg.Security.AllowedTargets, cfg.Security.DeniedTargets)
+	if err != nil {
+		logger.Error("invalid security settings", "error", err)
+		return 1
+	}
+	logger.Info("security settings",
+		"add_template", cfg.Security.AllowTemplateWrites,
+		"private_targets", cfg.Security.AllowPrivateTargets,
+		"allowed_targets", len(cfg.Security.AllowedTargets),
+		"denied_targets", len(cfg.Security.DeniedTargets))
+
+	mcpServer := api.NewNucleiMCPServer(scannerService, log.New(stderr, "[MCP] ", log.LstdFlags), templateManager, api.Options{
+		AllowTemplateWrites: cfg.Security.AllowTemplateWrites,
+		Scope:               scopeChecker,
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

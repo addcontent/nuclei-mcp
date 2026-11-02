@@ -10,13 +10,37 @@ import (
 
 	"github.com/addcontent/nuclei-mcp/pkg/cache"
 	"github.com/addcontent/nuclei-mcp/pkg/scanner"
+	"github.com/addcontent/nuclei-mcp/pkg/scope"
 	"github.com/addcontent/nuclei-mcp/pkg/templates"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-func NewNucleiMCPServer(service scanner.ScannerServiceInterface, logger *log.Logger, tm templates.TemplateManager) *server.MCPServer {
+// Options configures which tools are exposed and how targets are checked.
+type Options struct {
+	// AllowTemplateWrites registers the add_template tool.
+	AllowTemplateWrites bool
+	// Scope, when set, is checked before every scan.
+	Scope *scope.Checker
+}
+
+// checkScope returns a tool error result when the target is out of scope.
+func checkScope(ctx context.Context, opts Options, request mcp.CallToolRequest) *mcp.CallToolResult {
+	if opts.Scope == nil {
+		return nil
+	}
+	target, err := request.RequireString("target")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error())
+	}
+	if err := opts.Scope.Check(ctx, target); err != nil {
+		return mcp.NewToolResultError(err.Error())
+	}
+	return nil
+}
+
+func NewNucleiMCPServer(service scanner.ScannerServiceInterface, logger *log.Logger, tm templates.TemplateManager, opts Options) *server.MCPServer {
 	mcpServer := server.NewMCPServer(
 		"nuclei-scanner",
 		"1.0.0",
@@ -47,6 +71,9 @@ func NewNucleiMCPServer(service scanner.ScannerServiceInterface, logger *log.Log
 			mcp.Description("Single template ID to run (alternative to template_ids)"),
 		),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if refused := checkScope(ctx, opts, request); refused != nil {
+			return refused, nil
+		}
 		return HandleNucleiScanTool(ctx, request, service, logger)
 	})
 
@@ -57,6 +84,9 @@ func NewNucleiMCPServer(service scanner.ScannerServiceInterface, logger *log.Log
 			mcp.Required(),
 		),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if refused := checkScope(ctx, opts, request); refused != nil {
+			return refused, nil
+		}
 		return HandleBasicScanTool(ctx, request, service, logger)
 	})
 
@@ -66,13 +96,15 @@ func NewNucleiMCPServer(service scanner.ScannerServiceInterface, logger *log.Log
 			return HandleVulnerabilityResource(ctx, request, service, logger)
 		})
 
-	mcpServer.AddTool(mcp.NewTool("add_template",
-		mcp.WithDescription("Adds a new Nuclei template."),
-		mcp.WithString("name", mcp.Description("The name of the template file."), mcp.Required()),
-		mcp.WithString("content", mcp.Description("The content of the template file."), mcp.Required()),
-	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return HandleAddTemplate(ctx, request, tm)
-	})
+	if opts.AllowTemplateWrites {
+		mcpServer.AddTool(mcp.NewTool("add_template",
+			mcp.WithDescription("Adds a new Nuclei template."),
+			mcp.WithString("name", mcp.Description("The name of the template file."), mcp.Required()),
+			mcp.WithString("content", mcp.Description("The content of the template file."), mcp.Required()),
+		), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return HandleAddTemplate(ctx, request, tm)
+		})
+	}
 
 	mcpServer.AddTool(mcp.NewTool("list_templates",
 		mcp.WithDescription("Lists all available Nuclei templates."),
